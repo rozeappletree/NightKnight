@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:id="@+id/floating_icon_container">
+
+    <ImageView
+        android:id="@+id/floating_icon_image"
+        android:layout_width="50dp"
+        android:layout_height="50dp"
+        android:contentDescription="Floating Icon"
+        android:src="@mipmap/ic_knight" />
+
+    <TextView
+        android:id="@+id/floating_icon_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_vertical"
+        android:layout_marginStart="4dp"
+        android:background="@drawable/rounded_background"
+        android:padding="8dp"
+        android:textColor="@android:color/white"
+        android:visibility="gone" />
+</LinearLayout>
