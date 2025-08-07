@@ -13,8 +13,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
@@ -69,14 +72,19 @@ class FloatingIconService : Service() {
     private var messageGenerationJob: Job? = null
     private val gson = GsonBuilder().registerLeapAdapters().create() // LeapGson.get() could also be used if preferred
 
+    private lateinit var usageStatsManager: UsageStatsManager
+    private lateinit var appPackageManager: PackageManager
+    private var appNameUpdateJob: Job? = null
+
     companion object {
         const val MODEL_SLUG = "lfm2-1.2b"
         const val QUANTIZATION_SLUG = "lfm2-1.2b-20250710-8da4w"
         const val SYSTEM_PROMPT = "You are a friendly assistant. Your goal is to persuade the user to stop using their mobile phone and focus on their digital wellbeing. Generate short, encouraging messages to help the user achieve this."
-        const val MESSAGE_REFRESH_INTERVAL_MS = 5000L // Changed from QUOTE_REFRESH_INTERVAL_MS
+        const val MESSAGE_REFRESH_INTERVAL_MS = 5000L
         const val NOTIFICATION_CHANNEL_ID = "FloatingIconServiceChannel"
         const val NOTIFICATION_ID = 1
         const val TAG = "FloatingIconService"
+        const val APP_CHECK_INTERVAL_MS = 1000L // Interval to check foreground app
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -88,20 +96,25 @@ class FloatingIconService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification("Initializing service..."))
 
-        Log.d(TAG, "Service created. Starting model loading and message generation.") // Updated log
+        usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        appPackageManager = packageManager
+
+        Log.d(TAG, "Service created. Starting model loading and message generation.")
         serviceScope.launch {
-            loadModelAndStartMessageGeneration( // Renamed method
+            loadModelAndStartMessageGeneration(
                 onStatusChange = { status ->
                     Log.i(TAG, "Model loading status: $status")
                     updateNotification("Model: $status")
+                    // updateText(status) // Model loading statuses will be shown, then overwritten by app name
                 },
                 onError = { error ->
                     Log.e(TAG, "Model loading failed", error)
                     updateNotification("Error: Model load failed")
-                    updateText("Error loading model.") // Update UI
+                    updateText("Error loading model.") // Show critical errors
                 }
             )
         }
+        startForegroundAppUpdater()
     }
 
     private fun setupWindowManagerAndFloatingView() {
@@ -149,7 +162,7 @@ class FloatingIconService : Service() {
         screenHeight = displayMetrics.heightPixels
         screenWidth = displayMetrics.widthPixels
 
-        updateText("Loading...")
+        updateText("Loading...") // Initial text
 
         floatingView.setOnTouchListener { _, event ->
             handleTouchEvent(event)
@@ -171,7 +184,7 @@ class FloatingIconService : Service() {
                 params.y = initialY + (event.rawY - initialTouchY).toInt()
                 windowManager.updateViewLayout(floatingView, params)
                 if (isViewOverlapping(floatingView, binView)) {
-                    binView.setColorFilter(getColor(R.color.red)) // Ensure you have this color
+                    binView.setColorFilter(getColor(R.color.red))
                 } else {
                     binView.clearColorFilter()
                 }
@@ -181,7 +194,7 @@ class FloatingIconService : Service() {
                 val deltaX = event.rawX - initialTouchX
                 val deltaY = event.rawY - initialTouchY
                 if (kotlin.math.abs(deltaX) < clickThreshold && kotlin.math.abs(deltaY) < clickThreshold) {
-                    Toast.makeText(this@FloatingIconService, "Digital Wellbeing Service Running", Toast.LENGTH_SHORT).show() // Updated toast
+                    Toast.makeText(this@FloatingIconService, "Digital Wellbeing Service Running", Toast.LENGTH_SHORT).show()
                 } else {
                     if (isViewOverlapping(floatingView, binView)) {
                         stopSelf()
@@ -192,7 +205,7 @@ class FloatingIconService : Service() {
     }
 
 
-    private suspend fun loadModelAndStartMessageGeneration(onStatusChange: (String) -> Unit, onError: (Throwable) -> Unit) { // Renamed method
+    private suspend fun loadModelAndStartMessageGeneration(onStatusChange: (String) -> Unit, onError: (Throwable) -> Unit) {
         try {
             val resolvingMsg = "Resolving model..."
             onStatusChange(resolvingMsg)
@@ -210,7 +223,6 @@ class FloatingIconService : Service() {
             if (modelDownloader.queryStatus(modelToUse).type != LeapModelDownloader.ModelDownloadStatusType.DOWNLOADED) {
                 val requestingDownloadMsg = "Requesting model download..."
                 onStatusChange(requestingDownloadMsg)
-                // updateText(requestingDownloadMsg) // This is brief, loop gives better live status.
                 Log.d(TAG, "MODEL DOWNLOAD CODE IS BEING TRIGGERED")
                 modelDownloader.requestDownloadModel(modelToUse)
                 var isModelAvailable = false
@@ -232,7 +244,7 @@ class FloatingIconService : Service() {
                     onStatusChange(currentStatusMsg)
                     updateText(currentStatusMsg)
                     if (!isModelAvailable) {
-                         delay(1000) // Check status every second
+                         delay(1000)
                     }
                 }
             } else {
@@ -243,34 +255,33 @@ class FloatingIconService : Service() {
 
             val modelFile = modelDownloader.getModelFile(modelToUse)
             val loadingFromFileMsg = "Loading model..."
-            onStatusChange("Loading model from: ${modelFile.path}") // Notification gets detailed path
-            updateText(loadingFromFileMsg) // UI gets simpler message
+            onStatusChange("Loading model from: ${modelFile.path}")
+            updateText(loadingFromFileMsg)
             this.modelRunner = LeapClient.loadModel(modelFile.path)
 
-            val modelLoadedMsg = "Model loaded. Starting message generation." // Updated log
+            val modelLoadedMsg = "Model loaded." // Simplified from "Model loaded. Starting message generation."
             onStatusChange(modelLoadedMsg)
-            updateText("Generating reminder...") // Keep this specific for UI - Updated text
-            startPeriodicMessageGeneration() // Renamed method
+            updateText(modelLoadedMsg) // Text will soon be replaced by app name
+            startPeriodicMessageGeneration()
         } catch (e: Exception) {
-            Log.e(TAG, "Error in loadModelAndStartMessageGeneration", e) // Updated log
-            onError(e) // This will call updateText("Error loading model.")
+            Log.e(TAG, "Error in loadModelAndStartMessageGeneration", e)
+            onError(e)
         }
     }
 
-    private fun startPeriodicMessageGeneration() { // Renamed method
-        messageGenerationJob?.cancel() // Changed from quoteGenerationJob
+    private fun startPeriodicMessageGeneration() {
+        messageGenerationJob?.cancel()
         messageGenerationJob = serviceScope.launch {
             while (true) {
-                generateWellbeingMessage() // Renamed method
+                generateWellbeingMessage() // This will update notifications
                 delay(MESSAGE_REFRESH_INTERVAL_MS)
             }
         }
     }
 
-    private suspend fun generateWellbeingMessage() { // Renamed method
+    private suspend fun generateWellbeingMessage() {
         val runner = this.modelRunner ?: run {
-            Log.w(TAG, "ModelRunner not available for message generation.") // Updated log
-            updateText("Model not ready.")
+            Log.w(TAG, "ModelRunner not available for message generation.")
             return
         }
 
@@ -280,9 +291,9 @@ class FloatingIconService : Service() {
 
         val responseBuffer = StringBuilder()
         try {
-            Log.d(TAG, "Generating new wellbeing message...") // Updated log
+            Log.d(TAG, "Generating new wellbeing message...")
 
-            this.conversation!!.generateResponse("Give me a digital wellbeing tip.") // Updated prompt for generation
+            this.conversation!!.generateResponse("Give me a digital wellbeing tip.")
                 .onEach { response ->
                     if (response is MessageResponse.Chunk) {
                         responseBuffer.append(response.text)
@@ -290,35 +301,87 @@ class FloatingIconService : Service() {
                 }
                 .onCompletion { throwable ->
                     if (throwable == null) {
-                        val message = responseBuffer.toString().trim() // Changed from quote to message
-                        Log.i(TAG, "Generated message: $message") // Updated log
-                        updateText(message)
-                        updateNotification("Reminder: ${message.take(20)}...") // Updated notification
+                        val message = responseBuffer.toString().trim()
+                        Log.i(TAG, "Generated message: $message")
+                        // updateText(message) // Removed: Floating text shows app name
+                        updateNotification("Reminder: ${message.take(20)}...")
                     } else {
-                        Log.e(TAG, "Message generation error (onCompletion)", throwable) // Updated log
-                        updateText("Error generating reminder.") // Updated text
+                        Log.e(TAG, "Message generation error (onCompletion)", throwable)
+                        // updateText("Error generating reminder.") // Removed
                     }
                 }
                 .catch { e ->
-                    Log.e(TAG, "Message generation exception (catch)", e) // Updated log
-                    updateText("Error: Message generation failed.") // Updated text
+                    Log.e(TAG, "Message generation exception (catch)", e)
+                    // updateText("Error: Message generation failed.") // Removed
                 }
                 .collect()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start message generation flow", e) // Updated log
-            updateText("Error: Could not start generation.")
+            Log.e(TAG, "Failed to start message generation flow", e)
+            // updateText("Error: Could not start generation.") // Removed
         }
     }
 
+    private fun startForegroundAppUpdater() {
+        appNameUpdateJob?.cancel()
+        appNameUpdateJob = serviceScope.launch(Dispatchers.IO) {
+            while (true) {
+                val currentApp = getForegroundAppName()
+                updateText(currentApp)
+                delay(APP_CHECK_INTERVAL_MS)
+            }
+        }
+    }
+
+    @SuppressLint("WrongConstant") // UsageEvents.Event constants are fine
+    private fun getForegroundAppName(): String {
+        var currentForegroundApp = "" // Default to empty or a placeholder
+        val time = System.currentTimeMillis()
+        // Query for events in a recent window (e.g., last 10 seconds)
+        val usageEvents = usageStatsManager.queryEvents(time - 10 * 1000, time)
+
+        var lastForegroundPackageName: String? = null
+        var lastForegroundTimeStamp: Long = 0
+
+        val event = UsageEvents.Event() // Re-use event object for efficiency
+
+        while (usageEvents.hasNextEvent()) {
+            usageEvents.getNextEvent(event)
+            if (event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                // Check if this event is more recent than the last one found
+                if (event.timeStamp > lastForegroundTimeStamp) {
+                    lastForegroundTimeStamp = event.timeStamp
+                    lastForegroundPackageName = event.packageName
+                }
+            }
+        }
+
+        if (lastForegroundPackageName != null) {
+            try {
+                // Ensure lastForegroundPackageName is not null before using !!
+                val appInfo = appPackageManager.getApplicationInfo(lastForegroundPackageName!!, 0)
+                currentForegroundApp = appPackageManager.getApplicationLabel(appInfo).toString()
+            } catch (e: PackageManager.NameNotFoundException) {
+                Log.w(TAG, "App package not found: $lastForegroundPackageName", e)
+                // Ensure lastForegroundPackageName is not null before using !!
+                currentForegroundApp = lastForegroundPackageName!! // Fallback to package name
+            }
+        } else {
+             // currentForegroundApp remains "" or could be "Unknown"
+             // This can happen if no foreground event is found or if permission is missing.
+        }
+        return currentForegroundApp.ifEmpty { "..." } // Provide a placeholder for empty string
+    }
+
     private fun updateText(text: String) {
-        // Ensure UI updates are on the main thread
         Handler(Looper.getMainLooper()).post {
             if (::floatingIconText.isInitialized) {
                 if (text.isNotEmpty()) {
                     floatingIconText.text = text
                     floatingIconText.visibility = View.VISIBLE
                 } else {
-                    floatingIconText.visibility = View.GONE
+                    // If text is empty, you might want to hide it or show a placeholder
+                    floatingIconText.text = "..." // Default placeholder if app name is empty
+                    floatingIconText.visibility = View.VISIBLE
                 }
             }
         }
@@ -337,7 +400,7 @@ class FloatingIconService : Service() {
     }
 
     private fun createNotification(contentText: String): Notification {
-        val notificationIntent = Intent(this, MainActivity::class.java) // Opens MainActivity on tap
+        val notificationIntent = Intent(this, MainActivity::class.java)
         val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         } else {
@@ -346,9 +409,9 @@ class FloatingIconService : Service() {
         val pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, pendingIntentFlags)
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Digital Wellbeing Reminder") // Updated title
+            .setContentTitle("Digital Wellbeing Reminder")
             .setContentText(contentText)
-            .setSmallIcon(R.mipmap.ic_launcher) // Replace with your app's icon
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
@@ -363,20 +426,17 @@ class FloatingIconService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Service onStartCommand received.")
-        // If service is killed and restarted, this ensures model loading attempts again if needed.
-        // The main logic is already triggered in onCreate.
-        // We return START_STICKY to ensure the service restarts if killed by the system.
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Service destroying...")
-        messageGenerationJob?.cancel() // Changed from quoteGenerationJob
-        serviceScope.cancel() // Cancels all coroutines launched in this scope
+        messageGenerationJob?.cancel()
+        appNameUpdateJob?.cancel() // Cancel the app name updater job
+        serviceScope.cancel()
 
-        // Unload model - can be time-consuming, run blocking or in a new temporary scope if needed
-        runBlocking { // Using runBlocking for simplicity here, consider a separate scope for longer ops
+        runBlocking {
             try {
                 modelRunner?.unload()
                 Log.i(TAG, "Model unloaded.")
@@ -395,7 +455,6 @@ class FloatingIconService : Service() {
         Log.d(TAG, "Service destroyed.")
     }
 
-    // Bin icon helper methods (copied from original, ensure they work with current context)
     private fun showBinIcon() {
         if (!::binView.isInitialized) return
         Handler(Looper.getMainLooper()).post {
@@ -415,28 +474,19 @@ class FloatingIconService : Service() {
 
    private fun isViewOverlapping(view1: View, view2: View): Boolean {
         if (!::windowManager.isInitialized || view1.parent == null || view2.parent == null && view2.height == 0 && view2.width == 0) {
-             // If views are not attached, they cannot overlap in a meaningful way for UI.
-             // Or if windowManager isn't ready yet (shouldn't happen if called from touch listener on attached view)
             return false
         }
         val rect1 = Rect()
-        view1.getHitRect(rect1) // rect1 is in view1's coordinates
+        view1.getHitRect(rect1)
 
-        // Get absolute screen coordinates for view1's rect
         val location1 = IntArray(2)
         view1.getLocationOnScreen(location1)
         rect1.offsetTo(location1[0], location1[1])
 
-        // For binView, its params.x and params.y are relative to its gravity (BOTTOM|START).
-        // We need its absolute screen coordinates.
-        // Since binParams.gravity is BOTTOM|START, its (0,0) is bottom-left of the screen.
-        // y is offset from bottom, x is offset from left.
         val binScreenX = binParams.x
-        // binView.height might be 0 if not measured yet. Let's assume it's measured or use a fixed size.
-        val binHeight = if (view2.height == 0) 100 else view2.height // Estimate or get from layout
+        val binHeight = if (view2.height == 0) 100 else view2.height
         val binWidth = if (view2.width == 0) 100 else view2.width
-
-        val binScreenY = screenHeight - binHeight - binParams.y // y from top
+        val binScreenY = screenHeight - binHeight - binParams.y
 
         val rect2Screen = Rect(
             binScreenX,
