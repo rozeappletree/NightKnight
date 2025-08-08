@@ -32,9 +32,12 @@ import android.app.usage.UsageEvents // For event type constants
 import com.example.local_ai.db.AppUsageDao
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextAlign
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 
@@ -218,6 +221,7 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
     var usagePermissionGranted by remember { mutableStateOf(hasUsageStatsPermission(context)) }
     var appUsageStats by remember { mutableStateOf<List<AppUsageStat>>(emptyList()) }
     var multiDayHourlyUsageData by remember { mutableStateOf<List<List<Long>>>(List(21) { List(24) { 0L } }) }
+    var allAppUsageEvents by remember { mutableStateOf<List<AppUsageEvent>>(emptyList()) }
 
     fun fetchAppCounts() {
         coroutineScope.launch {
@@ -228,6 +232,23 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
     fun fetchHeatmapData() {
         coroutineScope.launch {
             multiDayHourlyUsageData = processEventsForMultiDayHourlyHeatmap(appUsageDao, 21)
+        }
+    }
+
+    fun fetchAllEvents() {
+        coroutineScope.launch {
+            allAppUsageEvents = appUsageDao.getAllEvents()
+        }
+    }
+
+    LaunchedEffect(usagePermissionGranted) {
+        if (usagePermissionGranted) {
+            fetchAppCounts()
+            fetchHeatmapData()
+            while (true) {
+                fetchAllEvents()
+                delay(2000) // Refresh every 2 seconds
+            }
         }
     }
 
@@ -248,8 +269,7 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
                     usagePermissionGranted = hasUsageStatsPermission(context)
                     if (usagePermissionGranted) {
                         startAppUsageMonitorService(context)
-                        fetchAppCounts()
-                        fetchHeatmapData()
+                        // Initial fetch will be triggered by LaunchedEffect
                     }
                 }) {
                     Text("Check Permission & Start Service")
@@ -269,11 +289,11 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                Text("App Usage Counts:", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+                Text("App Usage Counts:", style = MaterialTheme.typography.titleMedium)
                 Button(onClick = ::fetchAppCounts) {
                     Text("Refresh Usage Counts")
                 }
-                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp)) { // Reduced height
                     if (appUsageStats.isEmpty()) {
                         item { Text("No usage count data yet.") }
                     } else {
@@ -291,21 +311,76 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
 
                 Divider(modifier = Modifier.padding(vertical = 10.dp))
 
-                Text("Last 21 Days Usage Heatmap (by hour):", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+                Text("Last 21 Days Usage Heatmap (by hour):", style = MaterialTheme.typography.titleMedium)
                 Button(onClick = ::fetchHeatmapData) {
                     Text("Refresh Heatmap")
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 MultiDayHourlyHeatmapGrid(dailyHourlyData = multiDayHourlyUsageData)
 
-                LaunchedEffect(usagePermissionGranted) {
-                    if (usagePermissionGranted) {
-                        fetchAppCounts()
-                        fetchHeatmapData()
+                Divider(modifier = Modifier.padding(vertical = 10.dp))
+
+                Text("All App Usage Events (SQL Table Debug):", style = MaterialTheme.typography.titleMedium)
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+                    item { // Header Row
+                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).background(Color.LightGray)) {
+                            Text("Timestamp", modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                            Text("Package Name", modifier = Modifier.weight(2f), textAlign = TextAlign.Center)
+                            Text("Event Type", modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                        }
+                    }
+                    if (allAppUsageEvents.isEmpty()) {
+                        item { Text("No event data yet.") }
+                    } else {
+                        items(allAppUsageEvents) { event ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            ) {
+                                val sdf = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+                                Text(sdf.format(Date(event.timestamp)), modifier = Modifier.weight(1f), fontSize = 10.sp, textAlign = TextAlign.Center)
+                                Text(event.packageName, modifier = Modifier.weight(2f), fontSize = 10.sp, textAlign = TextAlign.Start)
+                                Text(eventTypeToString(event.eventType), modifier = Modifier.weight(1f), fontSize = 10.sp, textAlign = TextAlign.Center)
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+fun eventTypeToString(eventType: Int): String {
+    return when (eventType) {
+        UsageEvents.Event.NONE -> "NONE"
+        UsageEvents.Event.MOVE_TO_FOREGROUND -> "FG"
+        UsageEvents.Event.MOVE_TO_BACKGROUND -> "BG"
+        // UsageEvents.Event.END_OF_DAY -> "END_DAY" // Removed due to reported error
+        // UsageEvents.Event.CONTINUE_PREVIOUS_DAY -> "CONT_PREV_DAY" // Removed due to reported error
+        UsageEvents.Event.CONFIGURATION_CHANGE -> "CONFIG_CHANGE"
+        // UsageEvents.Event.SYSTEM_INTERACTION -> "SYS_INTERACT" // Removed due to reported error
+        UsageEvents.Event.USER_INTERACTION -> "USER_INTERACT"
+        UsageEvents.Event.SHORTCUT_INVOCATION -> "SHORTCUT"
+        // UsageEvents.Event.CHOOSER_ACTION -> "CHOOSER_ACT" // Removed due to reported error
+        // UsageEvents.Event.NOTIFICATION_SEEN -> "NOTIF_SEEN" // Removed due to reported error
+        UsageEvents.Event.STANDBY_BUCKET_CHANGED -> "STBY_BUCKET_CHG"
+        // UsageEvents.Event.NOTIFICATION_INTERRUPTION -> "NOTIF_IRQ" // Removed due to reported error
+        // UsageEvents.Event.SLICE_PINNED_PRIV -> "SLICE_PIN_PRIV" // Removed due to reported error
+        // UsageEvents.Event.SLICE_PINNED -> "SLICE_PINNED" // Removed due to reported error
+        UsageEvents.Event.SCREEN_INTERACTIVE -> "SCR_INTERACT"
+        UsageEvents.Event.SCREEN_NON_INTERACTIVE -> "SCR_NON_INT"
+        UsageEvents.Event.KEYGUARD_SHOWN -> "KEYGRD_SHOW" // Corrected from KEYGUARD_shown
+        UsageEvents.Event.KEYGUARD_HIDDEN -> "KEYGRD_HIDE"
+        UsageEvents.Event.FOREGROUND_SERVICE_START -> "FG_SVC_START"
+        UsageEvents.Event.FOREGROUND_SERVICE_STOP -> "FG_SVC_STOP"
+        // UsageEvents.Event.CONTINUING_FOREGROUND_SERVICE -> "CONT_FG_SVC" // Removed due to reported error
+        // UsageEvents.Event.ROLLOVER_FOREGROUND_SERVICE -> "ROLL_FG_SVC" // Removed due to reported error
+        UsageEvents.Event.ACTIVITY_STOPPED -> "ACT_STOP"
+        UsageEvents.Event.ACTIVITY_RESUMED -> "ACT_RESUME"
+        UsageEvents.Event.ACTIVITY_PAUSED -> "ACT_PAUSE"
+        // UsageEvents.Event.ACTIVITY_DESTROYED -> "ACT_DESTROY" // Removed due to reported error
+        UsageEvents.Event.DEVICE_SHUTDOWN -> "DEV_SHUTDOWN"
+        UsageEvents.Event.DEVICE_STARTUP -> "DEV_STARTUP"
+        else -> "UNKNOWN ($eventType)"
     }
 }
 
