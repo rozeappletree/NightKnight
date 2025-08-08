@@ -11,6 +11,7 @@ composeBom = "2024.09.00"
 gson = "2.13.1"
 leapSdk = "0.2.0"
 composeRuntime = "1.8.3"
+room = "2.7.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -32,6 +33,9 @@ gson = { group= "com.google.code.gson", name="gson", version.ref="gson"}
 leap-sdk = { module = "ai.liquid.leap:leap-sdk", version.ref = "leapSdk" }
 leap-gson = { module = "ai.liquid.leap:leap-gson", version.ref = "leapSdk" }
 leap-model-downloader = { module = "ai.liquid.leap:leap-model-downloader", version.ref = "leapSdk"}
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
