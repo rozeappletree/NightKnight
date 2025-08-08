@@ -15,7 +15,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -28,8 +27,13 @@ import com.example.local_ai.services.AppUsageMonitorService
 import kotlinx.coroutines.launch
 import java.util.Calendar
 import android.app.usage.UsageEvents // For event type constants
-import kotlin.math.max
-import kotlin.math.min
+import com.example.local_ai.db.AppUsageDao
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextAlign
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 
 // --- Helper functions for permission and service ---
@@ -129,6 +133,31 @@ private fun addDurationToBuckets(
     }
 }
 
+suspend fun processEventsForMultiDayHourlyHeatmap(
+    appUsageDao: AppUsageDao,
+    numberOfDays: Int
+): List<List<Long>> {
+    val multiDayData = mutableListOf<List<Long>>()
+    val calendar = Calendar.getInstance()
+
+    // Data is ordered from oldest (index 0) to newest/today (index numberOfDays-1)
+    for (dayAgo in (numberOfDays - 1) downTo 0) {
+        calendar.timeInMillis = System.currentTimeMillis()
+        calendar.add(Calendar.DAY_OF_YEAR, -dayAgo)
+        calendar.set(Calendar.HOUR_OF_DAY, 0)
+        calendar.set(Calendar.MINUTE, 0)
+        calendar.set(Calendar.SECOND, 0)
+        calendar.set(Calendar.MILLISECOND, 0)
+        val dayStartMillis = calendar.timeInMillis
+        val dayEndMillis = dayStartMillis + 24 * 60 * 60 * 1000 - 1
+
+        val dailyEvents = appUsageDao.getEventsForHeatmap(dayStartMillis, dayEndMillis)
+        val hourlyDataForDay = processEventsForHourlyHeatmap(dailyEvents, dayStartMillis)
+        multiDayData.add(hourlyDataForDay)
+    }
+    return multiDayData
+}
+
 
 // --- Main Composable Screen ---
 @Composable
@@ -140,7 +169,7 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
 
     var usagePermissionGranted by remember { mutableStateOf(hasUsageStatsPermission(context)) }
     var appUsageStats by remember { mutableStateOf<List<AppUsageStat>>(emptyList()) }
-    var hourlyUsageData by remember { mutableStateOf<List<Long>>(List(24) { 0L }) }
+    var multiDayHourlyUsageData by remember { mutableStateOf<List<List<Long>>>(List(21) { List(24) { 0L } }) }
 
     fun fetchAppCounts() {
         coroutineScope.launch {
@@ -150,87 +179,82 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
 
     fun fetchHeatmapData() {
         coroutineScope.launch {
-            val calendar = Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, 0)
-                set(Calendar.MINUTE, 0)
-                set(Calendar.SECOND, 0)
-                set(Calendar.MILLISECOND, 0)
-            }
-            val todayStartMillis = calendar.timeInMillis
-            val todayEndMillis = todayStartMillis + 24 * 60 * 60 * 1000 -1
-
-            val events = appUsageDao.getEventsForHeatmap(todayStartMillis, todayEndMillis)
-            hourlyUsageData = processEventsForHourlyHeatmap(events, todayStartMillis)
+            multiDayHourlyUsageData = processEventsForMultiDayHourlyHeatmap(appUsageDao, 21)
         }
     }
 
     Column(
-        modifier = modifier.fillMaxSize().padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        modifier = modifier.fillMaxSize().padding(16.dp) // Overall screen padding
     ) {
         if (!usagePermissionGranted) {
-            Text("Usage stats permission is required to track app usage.")
-            Button(onClick = { requestUsageStatsPermission(context) }) {
-                Text("Grant Permission")
-            }
-            Button(onClick = { // Combined button
-                usagePermissionGranted = hasUsageStatsPermission(context)
-                if (usagePermissionGranted) {
-                    startAppUsageMonitorService(context)
-                    fetchAppCounts() // Fetch initial data once permission granted
-                    fetchHeatmapData()
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("Usage stats permission is required to track app usage.")
+                Button(onClick = { requestUsageStatsPermission(context) }) {
+                    Text("Grant Permission")
                 }
-            }) {
-                Text("Check Permission & Start Service")
+                Button(onClick = {
+                    usagePermissionGranted = hasUsageStatsPermission(context)
+                    if (usagePermissionGranted) {
+                        startAppUsageMonitorService(context)
+                        fetchAppCounts()
+                        fetchHeatmapData()
+                    }
+                }) {
+                    Text("Check Permission & Start Service")
+                }
             }
         } else {
-            // Service Control and Data Refresh
-            Button(onClick = {
-                startAppUsageMonitorService(context)
-                // Optionally add a small delay or user feedback
-            }) {
-                Text("Ensure Monitor Service is Running")
-            }
+            Column(
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(onClick = {
+                    startAppUsageMonitorService(context)
+                }) {
+                    Text("Ensure Monitor Service is Running")
+                }
 
-            Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-            // App Usage Counts Section
-            Text("App Usage Counts:", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
-            Button(onClick = ::fetchAppCounts) {
-                Text("Refresh Usage Counts")
-            }
-            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (appUsageStats.isEmpty()) {
-                    item { Text("No usage count data yet.") }
-                } else {
-                    items(appUsageStats) { stat ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(stat.packageName, modifier = Modifier.weight(1f))
-                            Text("${stat.usage_count} opens")
+                Text("App Usage Counts:", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+                Button(onClick = ::fetchAppCounts) {
+                    Text("Refresh Usage Counts")
+                }
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+                    if (appUsageStats.isEmpty()) {
+                        item { Text("No usage count data yet.") }
+                    } else {
+                        items(appUsageStats) { stat ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(stat.packageName, modifier = Modifier.weight(1f))
+                                Text("${stat.usage_count} opens")
+                            }
                         }
                     }
                 }
-            }
 
-            Divider(modifier = Modifier.padding(vertical = 10.dp))
+                Divider(modifier = Modifier.padding(vertical = 10.dp))
 
-            // Heatmap Section
-            Text("Today's Usage Heatmap (by hour):", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
-            Button(onClick = ::fetchHeatmapData) {
-                Text("Refresh Heatmap")
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            DailyHeatmapRow(hourlyData = hourlyUsageData)
+                Text("Last 21 Days Usage Heatmap (by hour):", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+                Button(onClick = ::fetchHeatmapData) {
+                    Text("Refresh Heatmap")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                MultiDayHourlyHeatmapGrid(dailyHourlyData = multiDayHourlyUsageData)
 
-            // Initial data load when permission is already granted
-            LaunchedEffect(usagePermissionGranted) {
-                if (usagePermissionGranted) {
-                    fetchAppCounts()
-                    fetchHeatmapData()
+                LaunchedEffect(usagePermissionGranted) {
+                    if (usagePermissionGranted) {
+                        fetchAppCounts()
+                        fetchHeatmapData()
+                    }
                 }
             }
         }
@@ -238,49 +262,104 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun DailyHeatmapRow(hourlyData: List<Long>, modifier: Modifier = Modifier) {
-    if (hourlyData.isEmpty() || hourlyData.size != 24) {
+fun MultiDayHourlyHeatmapGrid(
+    dailyHourlyData: List<List<Long>>,
+    modifier: Modifier = Modifier
+) {
+    val numberOfDays = dailyHourlyData.size
+    if (numberOfDays == 0 || dailyHourlyData.any { it.size != 24 }) {
         Text("Heatmap data not available or invalid.")
         return
     }
 
-    val maxUsage = hourlyData.maxOrNull() ?: 1L // Avoid division by zero, 1L for minimal usage
-    val cellHeight = 40.dp
-    val cellSpacing = 2.dp
+    val configuration = LocalConfiguration.current
+    val screenWidthDp = configuration.screenWidthDp.dp
 
-    Column(modifier = modifier) {
+    val cellHeight = 10.dp // Halved from 18.dp
+    val dayLabelWidth = 35.dp // May need to be adjusted for "MMM dd"
+    val hourLabelHeight = 18.dp
+    val cellSpacing = 1.dp // MODIFIED
+    val screenHorizontalPadding = 32.dp // 16.dp on each side from AppUsageStatsScreen's main Column
+
+    val availableWidthForHeatmapComponent = screenWidthDp - screenHorizontalPadding
+    val fixedRowWidthElements = (dayLabelWidth + (cellSpacing * 24))
+
+    val extra = 4 
+    val calculatedCellWidth = (availableWidthForHeatmapComponent - fixedRowWidthElements) / (24 + extra) 
+
+    val finalCellWidth = if (calculatedCellWidth > 1.dp) calculatedCellWidth else 1.dp
+
+    val sdf = SimpleDateFormat("MMM dd", Locale.getDefault())
+    val calendar = Calendar.getInstance()
+
+    Column(
+        modifier = modifier.fillMaxWidth(), 
+        verticalArrangement = Arrangement.spacedBy(cellSpacing)
+    ) {
+        // Header Row for Hours (00h to 23h)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(cellSpacing)
         ) {
-            hourlyData.forEachIndexed { index, usageMillis ->
-                val intensity = if (maxUsage > 0) (usageMillis.toFloat() / maxUsage) else 0f
-                val color = Color.Blue.copy(alpha = max(0.1f, intensity)) // Ensure some visibility
-
-                Box(modifier = Modifier.weight(1f).height(cellHeight)) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        drawRect(color = color, size = Size(size.width, size.height))
-                    }
+            Spacer(Modifier.width(dayLabelWidth)) 
+            (0 until 24).forEach { hourIndex ->
+                Box(
+                    modifier = Modifier
+                        .width(finalCellWidth) 
+                        .height(hourLabelHeight),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
-                        text = "%02d".format(index), // Hour (00-23)
-                        modifier = Modifier.align(Alignment.Center),
-                        fontSize = 10.sp,
-                        color = if (intensity > 0.5f) Color.White else Color.Black
+                        text = "%02d".format(hourIndex),
+                        fontSize = 8.sp 
                     )
                 }
             }
         }
-        // Optional: Add labels for hours below the heatmap if needed
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            horizontalArrangement = Arrangement.SpaceAround
-        ) {
-            Text("00h", fontSize = 10.sp)
-            Text("06h", fontSize = 10.sp)
-            Text("12h", fontSize = 10.sp)
-            Text("18h", fontSize = 10.sp)
-            Text("23h", fontSize = 10.sp)
-        }
 
+        // Grid: Rows for days, displaying Today at the top
+        // dayIndex is the visual row index (0 = top row)
+        (0 until numberOfDays).forEach { dayIndex ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(cellSpacing)
+            ) {
+                val dateText = if (dayIndex == 0) {
+                    "Today"
+                } else {
+                    val tempCalendar = Calendar.getInstance()
+                    tempCalendar.add(Calendar.DAY_OF_YEAR, -dayIndex)
+                    sdf.format(tempCalendar.time).toUpperCase(Locale.getDefault())
+                }
+                Text(
+                    text = dateText,
+                    modifier = Modifier.width(dayLabelWidth),
+                    fontSize = 9.sp,
+                    textAlign = TextAlign.Center
+                )
+
+                // Map visual row index (dayIndex) to data index in dailyHourlyData
+                // dailyHourlyData[0] is the oldest, dailyHourlyData[numberOfDays-1] is today
+                val dataIndex = numberOfDays - 1 - dayIndex
+                (0 until 24).forEach { hourIndex ->
+                    val usageMillis = dailyHourlyData.getOrNull(dataIndex)?.getOrNull(hourIndex) ?: 0L
+                    val usageMinutes = usageMillis / (1000.0 * 60.0)
+                    val alpha = (usageMinutes / 60.0).toFloat().coerceIn(0.0f, 1.0f)
+                    val cellColor = Color.Red.copy(alpha = alpha)
+
+                    Box(
+                        modifier = Modifier
+                            .width(finalCellWidth) 
+                            .height(cellHeight)
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            drawRect(color = cellColor, size = Size(size.width, size.height))
+                        }
+                    }
+                }
+            }
+        }
     }
 }
+
