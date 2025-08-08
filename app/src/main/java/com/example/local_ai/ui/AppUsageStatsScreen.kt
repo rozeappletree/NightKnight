@@ -6,6 +6,8 @@ import android.content.Intent
 import android.os.Process
 import android.provider.Settings
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -62,42 +64,75 @@ fun startAppUsageMonitorService(context: Context) {
 // --- Helper functions for Heatmap Data Processing ---
 fun processEventsForHourlyHeatmap(
     events: List<AppUsageEvent>,
-    dayStartMillis: Long
+    dayStartMillis: Long,
+    limitTimestamp: Long // This is the timestamp up to which events/sessions are processed
 ): List<Long> {
     val hourlyBuckets = LongArray(24) { 0L }
-    val dayEndMillis = dayStartMillis + 24 * 60 * 60 * 1000 - 1
+    // Note: addDurationToBuckets internally uses dayStartMillis + 24h to define the day's boundary
 
     val sortedEvents = events.sortedWith(compareBy({ it.packageName }, { it.timestamp }))
     val openSessions = mutableMapOf<String, Long>()
 
     for (event in sortedEvents) {
-        if (event.timestamp > dayEndMillis && event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+        // If a MOVE_TO_FOREGROUND event occurs strictly after our processing limit,
+        // close any existing session for that app at limitTimestamp and skip this event for starting a new one.
+        if (event.timestamp > limitTimestamp && event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
             openSessions.remove(event.packageName)?.let { fgTimestamp ->
-                 addDurationToBuckets(hourlyBuckets, fgTimestamp, dayEndMillis, dayStartMillis)
+                if (fgTimestamp < limitTimestamp) { // Ensure the session started before the limit
+                    addDurationToBuckets(hourlyBuckets, fgTimestamp, limitTimestamp, dayStartMillis)
+                }
             }
-            continue
+            continue // This event is too late to start a relevant session
         }
-         if (event.timestamp < dayStartMillis && event.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND) {
+
+        // For all other event processing, ensure event times do not exceed the limitTimestamp
+        val effectiveEventTimestamp = event.timestamp.coerceAtMost(limitTimestamp)
+
+        // Skip background events that happened before the current day started if their session also started before.
+        // (This check was in the original code, keeping its spirit)
+        if (event.timestamp < dayStartMillis && event.eventType == UsageEvents.Event.MOVE_TO_BACKGROUND) {
+            // This might remove an app from openSessions if it was spuriously added from data before dayStartMillis
+            // However, openSessions[pkg] = event.timestamp.coerceAtLeast(dayStartMillis) handles FG starts.
+            // For now, let's keep it simple: if a BG event is before dayStart, it's not relevant for this day's buckets.
             continue
         }
 
+
         when (event.eventType) {
             UsageEvents.Event.MOVE_TO_FOREGROUND -> {
+                // Close any previous session for this app. It ends at effectiveEventTimestamp.
                 openSessions[event.packageName]?.let { previousFgTimestamp ->
-                    addDurationToBuckets(hourlyBuckets, previousFgTimestamp, event.timestamp.coerceAtMost(dayEndMillis), dayStartMillis)
+                    // Ensure previousFgTimestamp is before effectiveEventTimestamp to record valid duration
+                    if (previousFgTimestamp < effectiveEventTimestamp) {
+                         addDurationToBuckets(hourlyBuckets, previousFgTimestamp, effectiveEventTimestamp, dayStartMillis)
+                    }
                 }
-                openSessions[event.packageName] = event.timestamp.coerceAtLeast(dayStartMillis)
+                // Start a new session only if the original event timestamp is within our processing limit.
+                if (event.timestamp <= limitTimestamp) {
+                    openSessions[event.packageName] = event.timestamp.coerceAtLeast(dayStartMillis)
+                } else {
+                    // If event.timestamp > limitTimestamp, the FG event is too late to start a new session.
+                    // Any prior session for this app was closed above or by the initial check in the loop.
+                    openSessions.remove(event.packageName)
+                }
             }
             UsageEvents.Event.MOVE_TO_BACKGROUND -> {
+                // Close the session. It ends at effectiveEventTimestamp.
                 openSessions.remove(event.packageName)?.let { fgTimestamp ->
-                    addDurationToBuckets(hourlyBuckets, fgTimestamp, event.timestamp.coerceAtMost(dayEndMillis), dayStartMillis)
+                     if (fgTimestamp < effectiveEventTimestamp) { // Ensure session started before it ended effectively
+                        addDurationToBuckets(hourlyBuckets, fgTimestamp, effectiveEventTimestamp, dayStartMillis)
+                     }
                 }
             }
         }
     }
 
+    // For any sessions still marked as open, they are considered to run until limitTimestamp.
     openSessions.forEach { _, fgTimestamp ->
-        addDurationToBuckets(hourlyBuckets, fgTimestamp, dayEndMillis, dayStartMillis)
+        // Ensure the session started before the limitTimestamp to be valid.
+        if (fgTimestamp < limitTimestamp) {
+            addDurationToBuckets(hourlyBuckets, fgTimestamp, limitTimestamp, dayStartMillis)
+        }
     }
     return hourlyBuckets.toList()
 }
@@ -139,20 +174,33 @@ suspend fun processEventsForMultiDayHourlyHeatmap(
 ): List<List<Long>> {
     val multiDayData = mutableListOf<List<Long>>()
     val calendar = Calendar.getInstance()
+    val currentTime = System.currentTimeMillis() // Get current time once for consistency
 
     // Data is ordered from oldest (index 0) to newest/today (index numberOfDays-1)
     for (dayAgo in (numberOfDays - 1) downTo 0) {
-        calendar.timeInMillis = System.currentTimeMillis()
+        calendar.timeInMillis = System.currentTimeMillis() // Reset to current day for each calculation base
         calendar.add(Calendar.DAY_OF_YEAR, -dayAgo)
         calendar.set(Calendar.HOUR_OF_DAY, 0)
         calendar.set(Calendar.MINUTE, 0)
         calendar.set(Calendar.SECOND, 0)
         calendar.set(Calendar.MILLISECOND, 0)
         val dayStartMillis = calendar.timeInMillis
+        // Calculate the theoretical end of the day (23:59:59.999)
         val dayEndMillis = dayStartMillis + 24 * 60 * 60 * 1000 - 1
 
+        // Determine the timestamp up to which we process events and ongoing sessions for this day
+        val processingLimitTimestamp = if (dayAgo == 0) { // If today
+            // For today, limit processing to the current time, but not exceeding the day's actual end
+            currentTime.coerceAtMost(dayEndMillis)
+        } else { // If a past day
+            // For past days, process the full day
+            dayEndMillis
+        }
+
+        // Fetch events for the entire day from the DAO
         val dailyEvents = appUsageDao.getEventsForHeatmap(dayStartMillis, dayEndMillis)
-        val hourlyDataForDay = processEventsForHourlyHeatmap(dailyEvents, dayStartMillis)
+        // Pass the calculated processingLimitTimestamp to the hourly processing function
+        val hourlyDataForDay = processEventsForHourlyHeatmap(dailyEvents, dayStartMillis, processingLimitTimestamp)
         multiDayData.add(hourlyDataForDay)
     }
     return multiDayData
@@ -262,6 +310,38 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
 }
 
 @Composable
+fun HeatmapLegend(modifier: Modifier = Modifier) {
+    val legendItems = listOf(
+        Pair(">45min", Color.Red.copy(alpha = 1.0f)), // Very Dark Red
+        Pair("30-45min", Color.Red.copy(alpha = 0.7f)), // Dark Red
+        Pair("15-30min", Color.Red.copy(alpha = 0.35f)), // Light Red
+        Pair(">0-15min", Color.Red.copy(alpha = 0.15f)), // Very Light Red
+        Pair("0min", Color(0x10F0F0F0)) // Light Gray for no usage
+    )
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly, // Distributes space evenly
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        legendItems.forEach { (text, color) ->
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 2.dp)) { // Added padding for spacing between items
+                Box(
+                    modifier = Modifier
+                        .size(14.dp) // Slightly smaller box
+                        .background(color)
+                        .border(0.5.dp, Color.DarkGray) // Thinner border
+                )
+                Spacer(modifier = Modifier.width(3.dp)) // Slightly less space
+                Text(text, fontSize = 9.sp) // Slightly smaller font
+            }
+        }
+    }
+}
+
+@Composable
 fun MultiDayHourlyHeatmapGrid(
     dailyHourlyData: List<List<Long>>,
     modifier: Modifier = Modifier
@@ -275,50 +355,49 @@ fun MultiDayHourlyHeatmapGrid(
     val configuration = LocalConfiguration.current
     val screenWidthDp = configuration.screenWidthDp.dp
 
-    val cellHeight = 10.dp // Halved from 18.dp
-    val dayLabelWidth = 35.dp // May need to be adjusted for "MMM dd"
+    val cellHeight = 24.dp
+    val dayLabelWidth = 35.dp
     val hourLabelHeight = 18.dp
-    val cellSpacing = 1.dp // MODIFIED
-    val screenHorizontalPadding = 32.dp // 16.dp on each side from AppUsageStatsScreen's main Column
+    val cellSpacing = 1.dp
+    val screenHorizontalPadding = 32.dp // From AppUsageStatsScreen
 
     val availableWidthForHeatmapComponent = screenWidthDp - screenHorizontalPadding
     val fixedRowWidthElements = (dayLabelWidth + (cellSpacing * 24))
-
-    val extra = 4 
-    val calculatedCellWidth = (availableWidthForHeatmapComponent - fixedRowWidthElements) / (24 + extra) 
-
+    
+    val extra = 4
+    val calculatedCellWidth = (availableWidthForHeatmapComponent - fixedRowWidthElements) / (24 + extra)
     val finalCellWidth = if (calculatedCellWidth > 1.dp) calculatedCellWidth else 1.dp
 
     val sdf = SimpleDateFormat("MMM dd", Locale.getDefault())
-    val calendar = Calendar.getInstance()
 
     Column(
-        modifier = modifier.fillMaxWidth(), 
+        modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(cellSpacing)
     ) {
+        HeatmapLegend() // Display the legend
+
         // Header Row for Hours (00h to 23h)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(cellSpacing)
         ) {
-            Spacer(Modifier.width(dayLabelWidth)) 
+            Spacer(Modifier.width(dayLabelWidth))
             (0 until 24).forEach { hourIndex ->
                 Box(
                     modifier = Modifier
-                        .width(finalCellWidth) 
+                        .width(finalCellWidth)
                         .height(hourLabelHeight),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = "%02d".format(hourIndex),
-                        fontSize = 8.sp 
+                        fontSize = 8.sp
                     )
                 }
             }
         }
 
-        // Grid: Rows for days, displaying Today at the top
-        // dayIndex is the visual row index (0 = top row)
+        // Grid: Rows for days
         (0 until numberOfDays).forEach { dayIndex ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -326,7 +405,7 @@ fun MultiDayHourlyHeatmapGrid(
                 horizontalArrangement = Arrangement.spacedBy(cellSpacing)
             ) {
                 val dateText = if (dayIndex == 0) {
-                    "Today"
+                    "TODAY "
                 } else {
                     val tempCalendar = Calendar.getInstance()
                     tempCalendar.add(Calendar.DAY_OF_YEAR, -dayIndex)
@@ -339,22 +418,37 @@ fun MultiDayHourlyHeatmapGrid(
                     textAlign = TextAlign.Center
                 )
 
-                // Map visual row index (dayIndex) to data index in dailyHourlyData
-                // dailyHourlyData[0] is the oldest, dailyHourlyData[numberOfDays-1] is today
-                val dataIndex = numberOfDays - 1 - dayIndex
+                val dataIndex = numberOfDays - 1 - dayIndex // Today is at the end of dailyHourlyData
                 (0 until 24).forEach { hourIndex ->
                     val usageMillis = dailyHourlyData.getOrNull(dataIndex)?.getOrNull(hourIndex) ?: 0L
                     val usageMinutes = usageMillis / (1000.0 * 60.0)
-                    val alpha = (usageMinutes / 60.0).toFloat().coerceIn(0.0f, 1.0f)
-                    val cellColor = Color.Red.copy(alpha = alpha)
+
+                    val cellColor = when {
+                        usageMinutes > 45 -> Color.Red.copy(alpha = 1.0f)
+                        usageMinutes > 30 -> Color.Red.copy(alpha = 0.7f)
+                        usageMinutes > 15 -> Color.Red.copy(alpha = 0.35f) // Corrected to match legend
+                        usageMinutes > 0 -> Color.Red.copy(alpha = 0.15f)   // Corrected to match legend
+                        else -> Color(0x10F0F0F0) // transparent gray
+                    }
+
+                    val textColor = Color.White
 
                     Box(
                         modifier = Modifier
-                            .width(finalCellWidth) 
-                            .height(cellHeight)
+                            .width(finalCellWidth)
+                            .height(cellHeight),
+                        contentAlignment = Alignment.Center // Center content (Text) in the Box
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
                             drawRect(color = cellColor, size = Size(size.width, size.height))
+                        }
+                        if (usageMinutes > 0) { // Only show text if usage is greater than 0
+                            Text(
+                                text = usageMinutes.toInt().toString(),
+                                color = textColor,
+                                fontSize = 4.sp,
+                                textAlign = TextAlign.Center // Ensure text itself is centered if it spans multiple lines (though unlikely here)
+                            )
                         }
                     }
                 }
@@ -362,4 +456,3 @@ fun MultiDayHourlyHeatmapGrid(
         }
     }
 }
-
