@@ -8,19 +8,24 @@ import ai.liquid.leap.downloader.LeapModelDownloader
 import ai.liquid.leap.gson.registerLeapAdapters
 import ai.liquid.leap.message.MessageResponse
 import android.annotation.SuppressLint
+import android.app.AppOpsManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Process
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -32,6 +37,9 @@ import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import com.example.local_ai.data.db.AppDatabase
+import com.example.local_ai.data.db.AppUsageDao
+import com.example.local_ai.data.db.AppUsageEvent
 import com.google.gson.GsonBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,8 +51,11 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.util.Calendar
+import java.util.concurrent.TimeUnit
 
 class FloatingIconService : Service() {
 
@@ -67,13 +78,20 @@ class FloatingIconService : Service() {
     private var modelRunner: ModelRunner? = null
     private var conversation: Conversation? = null
     private var messageGenerationJob: Job? = null
-    private val gson = GsonBuilder().registerLeapAdapters().create() // LeapGson.get() could also be used if preferred
+    private val gson = GsonBuilder().registerLeapAdapters().create()
+
+    // Database and Data Collection
+    private lateinit var appUsageDao: AppUsageDao
+    private var dataCollectionJob: Job? = null
+    private val DATA_COLLECTION_INTERVAL_MS = TimeUnit.MINUTES.toMillis(15) // Collect every 15 mins
+    private val DATA_QUERY_WINDOW_MS = TimeUnit.HOURS.toMillis(1)       // Query last 1 hour of events
+
 
     companion object {
         const val MODEL_SLUG = "lfm2-1.2b"
         const val QUANTIZATION_SLUG = "lfm2-1.2b-20250710-8da4w"
         const val SYSTEM_PROMPT = "You are a friendly assistant. Your goal is to persuade the user to stop using their mobile phone and focus on their digital wellbeing. Generate short, encouraging messages to help the user achieve this."
-        const val MESSAGE_REFRESH_INTERVAL_MS = 5000L // Changed from QUOTE_REFRESH_INTERVAL_MS
+        const val MESSAGE_REFRESH_INTERVAL_MS = 5000L
         const val NOTIFICATION_CHANNEL_ID = "FloatingIconServiceChannel"
         const val NOTIFICATION_ID = 1
         const val TAG = "FloatingIconService"
@@ -88,9 +106,9 @@ class FloatingIconService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification("Initializing service..."))
 
-        Log.d(TAG, "Service created. Starting model loading and message generation.") // Updated log
+        Log.d(TAG, "Service created. Starting model loading and message generation.")
         serviceScope.launch {
-            loadModelAndStartMessageGeneration( // Renamed method
+            loadModelAndStartMessageGeneration(
                 onStatusChange = { status ->
                     Log.i(TAG, "Model loading status: $status")
                     updateNotification("Model: $status")
@@ -98,9 +116,23 @@ class FloatingIconService : Service() {
                 onError = { error ->
                     Log.e(TAG, "Model loading failed", error)
                     updateNotification("Error: Model load failed")
-                    updateText("Error loading model.") // Update UI
+                    updateText("Error loading model.")
                 }
             )
+        }
+
+        // Initialize Database DAO
+        appUsageDao = AppDatabase.getDatabase(this).appUsageDao()
+
+        // Start Data Collection if permission is granted
+        if (hasUsageStatsPermission(this)) {
+            Log.d(TAG, "Usage stats permission granted. Starting data collection.")
+            startDataCollection()
+        } else {
+            Log.w(TAG, "Usage stats permission NOT granted. Data collection will not start.")
+            // Consider sending a broadcast or updating UI to inform MainActivity
+            // if you want to prompt the user again from the service.
+            // For now, MainActivity handles the initial prompt.
         }
     }
 
@@ -171,7 +203,7 @@ class FloatingIconService : Service() {
                 params.y = initialY + (event.rawY - initialTouchY).toInt()
                 windowManager.updateViewLayout(floatingView, params)
                 if (isViewOverlapping(floatingView, binView)) {
-                    binView.setColorFilter(getColor(R.color.red)) // Ensure you have this color
+                    binView.setColorFilter(getColor(R.color.red))
                 } else {
                     binView.clearColorFilter()
                 }
@@ -181,7 +213,7 @@ class FloatingIconService : Service() {
                 val deltaX = event.rawX - initialTouchX
                 val deltaY = event.rawY - initialTouchY
                 if (kotlin.math.abs(deltaX) < clickThreshold && kotlin.math.abs(deltaY) < clickThreshold) {
-                    Toast.makeText(this@FloatingIconService, "Digital Wellbeing Service Running", Toast.LENGTH_SHORT).show() // Updated toast
+                    Toast.makeText(this@FloatingIconService, "Digital Wellbeing Service Running", Toast.LENGTH_SHORT).show()
                 } else {
                     if (isViewOverlapping(floatingView, binView)) {
                         stopSelf()
@@ -192,7 +224,7 @@ class FloatingIconService : Service() {
     }
 
 
-    private suspend fun loadModelAndStartMessageGeneration(onStatusChange: (String) -> Unit, onError: (Throwable) -> Unit) { // Renamed method
+    private suspend fun loadModelAndStartMessageGeneration(onStatusChange: (String) -> Unit, onError: (Throwable) -> Unit) {
         try {
             val resolvingMsg = "Resolving model..."
             onStatusChange(resolvingMsg)
@@ -210,7 +242,6 @@ class FloatingIconService : Service() {
             if (modelDownloader.queryStatus(modelToUse).type != LeapModelDownloader.ModelDownloadStatusType.DOWNLOADED) {
                 val requestingDownloadMsg = "Requesting model download..."
                 onStatusChange(requestingDownloadMsg)
-                // updateText(requestingDownloadMsg) // This is brief, loop gives better live status.
                 Log.d(TAG, "MODEL DOWNLOAD CODE IS BEING TRIGGERED")
                 modelDownloader.requestDownloadModel(modelToUse)
                 var isModelAvailable = false
@@ -232,7 +263,7 @@ class FloatingIconService : Service() {
                     onStatusChange(currentStatusMsg)
                     updateText(currentStatusMsg)
                     if (!isModelAvailable) {
-                         delay(1000) // Check status every second
+                         delay(1000)
                     }
                 }
             } else {
@@ -243,33 +274,33 @@ class FloatingIconService : Service() {
 
             val modelFile = modelDownloader.getModelFile(modelToUse)
             val loadingFromFileMsg = "Loading model..."
-            onStatusChange("Loading model from: ${modelFile.path}") // Notification gets detailed path
-            updateText(loadingFromFileMsg) // UI gets simpler message
+            onStatusChange("Loading model from: ${modelFile.path}")
+            updateText(loadingFromFileMsg)
             this.modelRunner = LeapClient.loadModel(modelFile.path)
 
-            val modelLoadedMsg = "Model loaded. Starting message generation." // Updated log
+            val modelLoadedMsg = "Model loaded. Starting message generation."
             onStatusChange(modelLoadedMsg)
-            updateText("Generating reminder...") // Keep this specific for UI - Updated text
-            startPeriodicMessageGeneration() // Renamed method
+            updateText("Generating reminder...")
+            startPeriodicMessageGeneration()
         } catch (e: Exception) {
-            Log.e(TAG, "Error in loadModelAndStartMessageGeneration", e) // Updated log
-            onError(e) // This will call updateText("Error loading model.")
+            Log.e(TAG, "Error in loadModelAndStartMessageGeneration", e)
+            onError(e)
         }
     }
 
-    private fun startPeriodicMessageGeneration() { // Renamed method
-        messageGenerationJob?.cancel() // Changed from quoteGenerationJob
+    private fun startPeriodicMessageGeneration() {
+        messageGenerationJob?.cancel()
         messageGenerationJob = serviceScope.launch {
-            while (true) {
-                generateWellbeingMessage() // Renamed method
+            while (isActive) { // Use isActive to respect cancellation
+                generateWellbeingMessage()
                 delay(MESSAGE_REFRESH_INTERVAL_MS)
             }
         }
     }
 
-    private suspend fun generateWellbeingMessage() { // Renamed method
+    private suspend fun generateWellbeingMessage() {
         val runner = this.modelRunner ?: run {
-            Log.w(TAG, "ModelRunner not available for message generation.") // Updated log
+            Log.w(TAG, "ModelRunner not available for message generation.")
             updateText("Model not ready.")
             return
         }
@@ -280,9 +311,9 @@ class FloatingIconService : Service() {
 
         val responseBuffer = StringBuilder()
         try {
-            Log.d(TAG, "Generating new wellbeing message...") // Updated log
+            Log.d(TAG, "Generating new wellbeing message...")
 
-            this.conversation!!.generateResponse("Give me a digital wellbeing tip.") // Updated prompt for generation
+            this.conversation!!.generateResponse("Give me a digital wellbeing tip.")
                 .onEach { response ->
                     if (response is MessageResponse.Chunk) {
                         responseBuffer.append(response.text)
@@ -290,28 +321,181 @@ class FloatingIconService : Service() {
                 }
                 .onCompletion { throwable ->
                     if (throwable == null) {
-                        val message = responseBuffer.toString().trim() // Changed from quote to message
-                        Log.i(TAG, "Generated message: $message") // Updated log
+                        val message = responseBuffer.toString().trim()
+                        Log.i(TAG, "Generated message: $message")
                         updateText(message)
-                        updateNotification("Reminder: ${message.take(20)}...") // Updated notification
+                        updateNotification("Reminder: ${message.take(20)}...")
                     } else {
-                        Log.e(TAG, "Message generation error (onCompletion)", throwable) // Updated log
-                        updateText("Error generating reminder.") // Updated text
+                        Log.e(TAG, "Message generation error (onCompletion)", throwable)
+                        updateText("Error generating reminder.")
                     }
                 }
                 .catch { e ->
-                    Log.e(TAG, "Message generation exception (catch)", e) // Updated log
-                    updateText("Error: Message generation failed.") // Updated text
+                    Log.e(TAG, "Message generation exception (catch)", e)
+                    updateText("Error: Message generation failed.")
                 }
                 .collect()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start message generation flow", e) // Updated log
+            Log.e(TAG, "Failed to start message generation flow", e)
             updateText("Error: Could not start generation.")
         }
     }
 
+    // --- Data Collection Logic ---
+    private fun hasUsageStatsPermission(context: Context): Boolean {
+        val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        val mode = appOps.checkOpNoThrow(
+            AppOpsManager.OPSTR_GET_USAGE_STATS,
+            Process.myUid(),
+            context.packageName
+        )
+        return mode == AppOpsManager.MODE_ALLOWED
+    }
+
+    private fun getAppNameFromPackage(packageName: String, context: Context): String {
+        return try {
+            val packageManager = context.packageManager
+            val applicationInfo = packageManager.getApplicationInfo(packageName, 0)
+            packageManager.getApplicationLabel(applicationInfo).toString()
+        } catch (e: PackageManager.NameNotFoundException) {
+            Log.w(TAG, "App name not found for package: $packageName")
+            packageName // Fallback to package name
+        }
+    }
+
+    private fun startDataCollection() {
+        dataCollectionJob?.cancel()
+        dataCollectionJob = serviceScope.launch {
+            while (isActive) {
+                Log.d(TAG, "Data collection cycle started.")
+                collectAndStoreUsageData()
+                Log.d(TAG, "Data collection cycle finished. Next run in ${DATA_COLLECTION_INTERVAL_MS / 60000} minutes.")
+                delay(DATA_COLLECTION_INTERVAL_MS)
+            }
+        }
+    }
+
+    private suspend fun collectAndStoreUsageData() {
+        val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        val calendar = Calendar.getInstance()
+        val endTime = calendar.timeInMillis
+        // Query a window. Adjust start time if you want to avoid duplicate processing
+        // or ensure no gaps if service restarts. For now, simple fixed window.
+        calendar.add(Calendar.MILLISECOND, (-DATA_QUERY_WINDOW_MS).toInt())
+        val startTime = calendar.timeInMillis
+
+        Log.d(TAG, "Querying usage events from ${formatTime(startTime)} to ${formatTime(endTime)}")
+
+        try {
+            val queryEvents = usageStatsManager.queryEvents(startTime, endTime)
+            val event = UsageEvents.Event() // Re-use object
+            var eventsProcessed = 0
+
+            while (queryEvents.hasNextEvent()) {
+                queryEvents.getNextEvent(event)
+                eventsProcessed++
+
+                val appName: String
+                val eventTypeString: String
+                var appUsageEvent: AppUsageEvent? = null
+
+                when (event.eventType) {
+                    UsageEvents.Event.MOVE_TO_FOREGROUND -> {
+                        appName = getAppNameFromPackage(event.packageName, this@FloatingIconService)
+                        eventTypeString = "APP_USAGE_FG"
+                        Log.d(TAG, "Event: FG - $appName at ${formatTime(event.timeStamp)}")
+                        appUsageEvent = AppUsageEvent(
+                            timestamp = event.timeStamp,
+                            appName = appName,
+                            usageTimeMillis = 0L, // Simplified: duration calculation needs pairing
+                            eventType = "APP_USAGE",
+                            sessionOpenCount = 1
+                        )
+                    }
+                    UsageEvents.Event.MOVE_TO_BACKGROUND -> {
+                         appName = getAppNameFromPackage(event.packageName, this@FloatingIconService)
+                         eventTypeString = "APP_USAGE_BG" // We are not storing this yet
+                         Log.d(TAG, "Event: BG - $appName at ${formatTime(event.timeStamp)}")
+                        // In a more complex setup, you'd use this to calculate duration for a previous FG event.
+                    }
+                    UsageEvents.Event.SCREEN_INTERACTIVE -> { // Screen became interactive (unlock)
+                        appName = "Screen on (unlocked)"
+                        eventTypeString = "SYSTEM_EVENT_SCREEN_ON"
+                         Log.d(TAG, "Event: SCREEN_ON at ${formatTime(event.timeStamp)}")
+                        appUsageEvent = AppUsageEvent(
+                            timestamp = event.timeStamp,
+                            appName = appName,
+                            usageTimeMillis = 0L,
+                            eventType = "SYSTEM_EVENT",
+                            sessionOpenCount = 1 // Or 0 if not counted as "access"
+                        )
+                    }
+                    UsageEvents.Event.SCREEN_NON_INTERACTIVE -> { // Screen became non-interactive (off/lock)
+                        appName = "Screen off (locked)"
+                        eventTypeString = "SYSTEM_EVENT_SCREEN_OFF"
+                        Log.d(TAG, "Event: SCREEN_OFF at ${formatTime(event.timeStamp)}")
+                        appUsageEvent = AppUsageEvent(
+                            timestamp = event.timeStamp,
+                            appName = appName,
+                            usageTimeMillis = 0L, // Duration here could be the time it was off, if calculated later
+                            eventType = "SYSTEM_EVENT",
+                            sessionOpenCount = 0
+                        )
+                    }
+                    UsageEvents.Event.DEVICE_STARTUP -> {
+                        appName = "Device boot"
+                        eventTypeString = "SYSTEM_EVENT_BOOT"
+                        Log.d(TAG, "Event: DEVICE_BOOT at ${formatTime(event.timeStamp)}")
+                        appUsageEvent = AppUsageEvent(
+                            timestamp = event.timeStamp,
+                            appName = appName,
+                            usageTimeMillis = 0L,
+                            eventType = "SYSTEM_EVENT",
+                            sessionOpenCount = 0
+                        )
+                    }
+                     UsageEvents.Event.DEVICE_SHUTDOWN -> {
+                        appName = "Device shutdown"
+                        eventTypeString = "SYSTEM_EVENT_SHUTDOWN"
+                         Log.d(TAG, "Event: DEVICE_SHUTDOWN at ${formatTime(event.timeStamp)}")
+                        appUsageEvent = AppUsageEvent(
+                            timestamp = event.timeStamp,
+                            appName = appName,
+                            usageTimeMillis = 0L,
+                            eventType = "SYSTEM_EVENT",
+                            sessionOpenCount = 0
+                        )
+                    }
+                    // Add more event types as needed:
+                    // UsageEvents.Event.KEYGUARD_SHOWN, KEYGUARD_HIDDEN, CONFIGURATION_CHANGE, etc.
+                    else -> {
+                        // Optional: Log unknown or unhandled event types
+                        // Log.v(TAG, "Unhandled event type: ${event.eventType} for package ${event.packageName}")
+                    }
+                }
+
+                appUsageEvent?.let {
+                    try {
+                        appUsageDao.insertEvent(it)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error inserting event into database: ${it.appName}", e)
+                    }
+                }
+            }
+            Log.d(TAG, "Finished processing $eventsProcessed usage events for the window.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during collectAndStoreUsageData", e)
+        }
+    }
+
+    private fun formatTime(timestamp: Long): String {
+        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+        return sdf.format(java.util.Date(timestamp))
+    }
+    // --- End Data Collection Logic ---
+
+
     private fun updateText(text: String) {
-        // Ensure UI updates are on the main thread
         Handler(Looper.getMainLooper()).post {
             if (::floatingIconText.isInitialized) {
                 if (text.isNotEmpty()) {
@@ -337,7 +521,7 @@ class FloatingIconService : Service() {
     }
 
     private fun createNotification(contentText: String): Notification {
-        val notificationIntent = Intent(this, MainActivity::class.java) // Opens MainActivity on tap
+        val notificationIntent = Intent(this, MainActivity::class.java)
         val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         } else {
@@ -346,9 +530,9 @@ class FloatingIconService : Service() {
         val pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, pendingIntentFlags)
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Digital Wellbeing Reminder") // Updated title
+            .setContentTitle("Digital Wellbeing Reminder")
             .setContentText(contentText)
-            .setSmallIcon(R.mipmap.ic_launcher) // Replace with your app's icon
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
@@ -363,20 +547,27 @@ class FloatingIconService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Service onStartCommand received.")
-        // If service is killed and restarted, this ensures model loading attempts again if needed.
-        // The main logic is already triggered in onCreate.
-        // We return START_STICKY to ensure the service restarts if killed by the system.
+        // Re-check permission and potentially start data collection if it wasn't started in onCreate
+        // (e.g., if permission was granted after service was already created but before it was started by toggle)
+        if (dataCollectionJob == null || !dataCollectionJob!!.isActive) {
+            if (hasUsageStatsPermission(this)) {
+                Log.d(TAG, "onStartCommand: Usage stats permission granted. Ensuring data collection is running.")
+                startDataCollection()
+            } else {
+                Log.w(TAG, "onStartCommand: Usage stats permission NOT granted. Data collection will not start.")
+            }
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Service destroying...")
-        messageGenerationJob?.cancel() // Changed from quoteGenerationJob
-        serviceScope.cancel() // Cancels all coroutines launched in this scope
+        messageGenerationJob?.cancel()
+        dataCollectionJob?.cancel() // Cancel data collection job
+        serviceScope.cancel()
 
-        // Unload model - can be time-consuming, run blocking or in a new temporary scope if needed
-        runBlocking { // Using runBlocking for simplicity here, consider a separate scope for longer ops
+        runBlocking {
             try {
                 modelRunner?.unload()
                 Log.i(TAG, "Model unloaded.")
@@ -395,7 +586,6 @@ class FloatingIconService : Service() {
         Log.d(TAG, "Service destroyed.")
     }
 
-    // Bin icon helper methods (copied from original, ensure they work with current context)
     private fun showBinIcon() {
         if (!::binView.isInitialized) return
         Handler(Looper.getMainLooper()).post {
@@ -415,28 +605,19 @@ class FloatingIconService : Service() {
 
    private fun isViewOverlapping(view1: View, view2: View): Boolean {
         if (!::windowManager.isInitialized || view1.parent == null || view2.parent == null && view2.height == 0 && view2.width == 0) {
-             // If views are not attached, they cannot overlap in a meaningful way for UI.
-             // Or if windowManager isn't ready yet (shouldn't happen if called from touch listener on attached view)
             return false
         }
         val rect1 = Rect()
-        view1.getHitRect(rect1) // rect1 is in view1's coordinates
+        view1.getHitRect(rect1)
 
-        // Get absolute screen coordinates for view1's rect
         val location1 = IntArray(2)
         view1.getLocationOnScreen(location1)
         rect1.offsetTo(location1[0], location1[1])
 
-        // For binView, its params.x and params.y are relative to its gravity (BOTTOM|START).
-        // We need its absolute screen coordinates.
-        // Since binParams.gravity is BOTTOM|START, its (0,0) is bottom-left of the screen.
-        // y is offset from bottom, x is offset from left.
         val binScreenX = binParams.x
-        // binView.height might be 0 if not measured yet. Let's assume it's measured or use a fixed size.
-        val binHeight = if (view2.height == 0) 100 else view2.height // Estimate or get from layout
+        val binHeight = if (view2.height == 0) 100 else view2.height
         val binWidth = if (view2.width == 0) 100 else view2.width
-
-        val binScreenY = screenHeight - binHeight - binParams.y // y from top
+        val binScreenY = screenHeight - binHeight - binParams.y
 
         val rect2Screen = Rect(
             binScreenX,
