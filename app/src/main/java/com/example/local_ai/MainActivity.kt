@@ -61,19 +61,32 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.local_ai.data.db.AppDatabase // Assuming AppDatabase is your Room database class
 import com.example.local_ai.ui.theme.LocalaiTheme
 import com.example.local_ai.ui.usage.AppUsageViewModel
-import com.example.local_ai.ui.usage.FormattedAppUsageEvent
 import com.example.local_ai.ui.usage.DailyUsageDigestViewModel // Added
+import com.example.local_ai.ui.usage.DailyUsageDigestViewModelFactory // Added for the fix
 import com.example.local_ai.ui.usage.DigestGeneralStats // Added
 import com.example.local_ai.ui.usage.AppUsageStat // Added
 import com.example.local_ai.ui.usage.CategoryUsageStat // Added
+import com.example.local_ai.ui.usage.FormattedAppUsageEvent
 import com.example.local_ai.ui.usage.HourlyUsageStat // Added
+// import com.example.local_ai.ui.usage.UsageDao // Removed this import
+import com.example.local_ai.data.db.AppUsageDao // Added this import
+import java.util.Calendar // Added for the fix
 
 class MainActivity : ComponentActivity() {
 
     private val OVERLAY_PERMISSION_REQUEST_CODE = 1234
     private var isServiceActive by mutableStateOf(false)
+
+    // Placeholder for getting UsageDao. Replace with your actual implementation.
+    private fun getUsageDao(): AppUsageDao { // Changed return type here
+        // This is a placeholder. You should get your DAO instance from your Room database.
+        // Example: return (application as MyApplication).database.usageDao()
+        // For now, returning a dummy implementation for compilation.
+        return AppDatabase.getDatabase(applicationContext).appUsageDao() // Example instantiation
+    }
 
     private fun hasUsageStatsPermission(context: Context): Boolean {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
@@ -108,7 +121,10 @@ class MainActivity : ComponentActivity() {
             LocalaiTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     val pagerState = rememberPagerState(pageCount = { 3 })
-                    // val context = LocalContext.current // No longer needed here
+                    val context = LocalContext.current // Added for DAO
+
+                    // Create the ViewModel factory
+                    val dailyUsageDigestViewModelFactory = DailyUsageDigestViewModelFactory(getUsageDao())
 
                     HorizontalPager(
                         state = pagerState,
@@ -136,7 +152,9 @@ class MainActivity : ComponentActivity() {
                             2 -> DailyUsageDigestPage(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(innerPadding)
+                                    .padding(innerPadding),
+                                // Provide the factory to the viewModel() call
+                                viewModel = viewModel(factory = dailyUsageDigestViewModelFactory)
                             )
                         }
                     }
@@ -289,7 +307,7 @@ fun DailyActivityRow(activity: FormattedAppUsageEvent) {
 @Composable
 fun DailyUsageDigestPage(
     modifier: Modifier = Modifier,
-    viewModel: DailyUsageDigestViewModel = viewModel()
+    viewModel: DailyUsageDigestViewModel // Factory will be provided by the caller
 ) {
     val currentDate by viewModel.currentDate.collectAsState()
     val digestStats by viewModel.digestStats.collectAsState()
@@ -300,7 +318,7 @@ fun DailyUsageDigestPage(
     val ignoredAppCount by viewModel.ignoredAppCount.collectAsState()
 
     LaunchedEffect(Unit) {
-        viewModel.loadDigestData() // Initial load
+        viewModel.loadDigestData(Calendar.getInstance()) // Initial load with current date
     }
 
     LazyColumn(

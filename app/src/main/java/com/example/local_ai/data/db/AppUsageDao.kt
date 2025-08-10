@@ -16,4 +16,7 @@ interface AppUsageDao {
     fun getEventsForPeriod(startTimeMillis: Long, endTimeMillis: Long): Flow<List<AppUsageEvent>>
 
     // We will add more queries here for the digest, e.g., to sum usageTimeMillis and sessionOpenCount per appName
+
+    @Query("SELECT SUM(usageTimeMillis) FROM app_usage_events WHERE timestamp BETWEEN :startTimeMillis AND :endTimeMillis")
+    suspend fun getSummedUsageForHour(startTimeMillis: Long, endTimeMillis: Long): Long?
 }
