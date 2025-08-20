@@ -96,7 +96,7 @@ class FloatingIconService : Service() {
     companion object {
         const val MODEL_SLUG = "lfm2-1.2b"
         const val QUANTIZATION_SLUG = "lfm2-1.2b-20250710-8da4w"
-        const val SYSTEM_PROMPT = "You are a friendly assistant. Your goal is to persuade the user to stop using their mobile phone and focus on their digital wellbeing. Generate short, encouraging messages to help the user achieve this."
+        const val SYSTEM_PROMPT = "You are an roman era Knight AI advisor who asks users to reduce screen time during night time so that they can sleep peacefully. You witty, wicked smart and extremely persuasive."
         const val MESSAGE_REFRESH_INTERVAL_MS = 5000L
         const val NOTIFICATION_CHANNEL_ID = "FloatingIconServiceChannel"
         const val NOTIFICATION_ID = 1
@@ -366,7 +366,8 @@ class FloatingIconService : Service() {
             }
             updateAppUsageLabelAndProgress(currentApp, percentage)
 
-            this.conversation!!.generateResponse("Give me a digital wellbeing tip.")
+            val userPrompt = "The user is currently using the app '$currentApp'. Their usage percentage for this app is $percentage%. Generate a small, concise, and witty response in the style of a Roman era knight to encourage them to reduce screen time, especially during the night, for peaceful sleep. Use not more than 30 words."
+            this.conversation!!.generateResponse(userPrompt)
                 .onEach { response ->
                     if (response is ai.liquid.leap.message.MessageResponse.Chunk) {
                         responseBuffer.append(response.text)
@@ -375,7 +376,9 @@ class FloatingIconService : Service() {
                 .onCompletion { throwable ->
                     if (throwable == null) {
                         val wellbeingMessage = responseBuffer.toString().trim()
-                        val finalMessage = "[$currentApp] $wellbeingMessage"
+                        // val finalMessage = "[$currentApp] $wellbeingMessage"
+                        val finalMessage = "$wellbeingMessage"
+
                         Log.i(TAG, "Generated message for $currentApp: $wellbeingMessage")
                         updateText(finalMessage)
                         updateNotification("[$currentApp] ${wellbeingMessage.take(20)}...")
@@ -674,8 +677,10 @@ class FloatingIconService : Service() {
         val binActualWidth = if (view2.width > 0) view2.width else binParams.width.takeIf { it > 0 } ?: 100
         val binActualHeight = if (view2.height > 0) view2.height else binParams.height.takeIf { it > 0 } ?: 100
 
-        val binScreenX = binParams.x
-        val binScreenY = screenHeight - binActualHeight - binParams.y
+        // Calculate bin's position on screen based on its gravity and x, y offsets in LayoutParams
+        // For Gravity.BOTTOM | Gravity.START
+        val binScreenX = binParams.x 
+        val binScreenY = screenHeight - binActualHeight - binParams.y // y is from bottom
 
         val rect2Screen = Rect(
             binScreenX,
@@ -683,6 +688,12 @@ class FloatingIconService : Service() {
             binScreenX + binActualWidth,
             binScreenY + binActualHeight
         )
+        // Log.d(TAG, "Rect1 (FloatingView): $rect1")
+        // Log.d(TAG, "Rect2 (BinView Screen): $rect2Screen")
+        // Log.d(TAG, "BinView LayoutParams: x=${binParams.x}, y=${binParams.y}, width=${binParams.width}, height=${binParams.height}")
+        // Log.d(TAG, "Screen Dims: Height=$screenHeight, Width=$screenWidth")
+        // Log.d(TAG, "BinView actual dims: width=$binActualWidth, height=$binActualHeight")
+
         return Rect.intersects(rect1, rect2Screen)
     }
 }
