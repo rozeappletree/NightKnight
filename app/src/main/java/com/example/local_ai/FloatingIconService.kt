@@ -280,7 +280,7 @@ class FloatingIconService : Service() {
 
     private suspend fun loadModelAndStartMessageGeneration(onStatusChange: (String) -> Unit, onError: (Throwable) -> Unit) {
         try {
-            val resolvingMsg = "Resolving model..."
+            val resolvingMsg = "Fwah! Here I come 🦾"
             onStatusChange(resolvingMsg)
             updateText(resolvingMsg)
             val modelToUse = ai.liquid.leap.downloader.LeapDownloadableModel.resolve(MODEL_SLUG, QUANTIZATION_SLUG)
@@ -327,7 +327,7 @@ class FloatingIconService : Service() {
             }
 
             val modelFile = modelDownloader.getModelFile(modelToUse)
-            val loadingFromFileMsg = "Loading model..."
+            val loadingFromFileMsg = "Hold tight 🛡️"
             onStatusChange("Loading model from: ${modelFile.path}")
             updateText(loadingFromFileMsg)
             this.modelRunner = LeapClient.loadModel(modelFile.path)
