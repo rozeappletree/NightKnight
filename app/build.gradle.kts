@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -50,6 +51,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.androidx.lifecycle.viewmodel.compose) // Added this line
 
     // leap sdk
     implementation("ai.liquid.leap:leap-sdk:0.2.0")
@@ -60,6 +62,14 @@ dependencies {
     implementation(libs.leap.model.downloader)
 
     implementation("androidx.compose.material:material-icons-extended-android:1.6.8") // Or the latest version
+
+    // Room
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
+    // WorkManager
+    implementation(libs.androidx.work.runtime.ktx) // Added this line
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

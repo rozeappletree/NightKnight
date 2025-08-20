@@ -8,4 +8,10 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
     <color name="red">#FFFF0000</color>
+    <color name="holo_yellow_light">#FFFF00</color>
+    <color name="holo_red_light">#FF4444</color>
+    <color name="my_red_light">#CCFF0000</color>
+    <color name="my_yellow_light">#CCFFFF00</color>
+    <color name="translucent_black">#80000000</color>
+    <color name="translucent_grey">#B3CCCCCC</color>
 </resources>
