@@ -73,16 +73,19 @@ class DailyUsageDigestViewModel(
     val ignoredAppCount: StateFlow<Int> = _ignoredAppCount
 
     init {
-        // For simplicity, using today's date. You might want to allow date selection.
-        val todayCalendar = Calendar.getInstance()
-        loadDigestData(todayCalendar)
+        // Load data for yesterday by default.
+        val yesterdayCalendar = Calendar.getInstance()
+        yesterdayCalendar.add(Calendar.DAY_OF_YEAR, -1) // Move to yesterday
+        loadDigestData(yesterdayCalendar)
     }
 
     // Overload or modify to accept a Calendar instance for the date to load
     fun loadDigestData(dateToLoad: Calendar) {
         viewModelScope.launch {
-            // Set current date string
-            _currentDate.value = SimpleDateFormat("EEEE, d MMMM, yyyy", Locale.getDefault()).format(dateToLoad.time)
+            // Set current date string to yesterday
+            val yesterdayForDisplay = Calendar.getInstance()
+            yesterdayForDisplay.add(Calendar.DAY_OF_YEAR, -1)
+            _currentDate.value = SimpleDateFormat("EEEE, d MMMM, yyyy", Locale.getDefault()).format(yesterdayForDisplay.time)
 
             // Calculate dates for "Daily Average" and the two previous days
             val digestSdf = SimpleDateFormat("d MMM", Locale.getDefault())

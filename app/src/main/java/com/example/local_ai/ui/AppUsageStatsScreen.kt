@@ -243,7 +243,7 @@ fun AppUsageStatsScreen(modifier: Modifier = Modifier) {
 
     fun fetchHeatmapData() {
         coroutineScope.launch {
-            val numberOfDays = 21
+            val numberOfDays = 21 // This now means 21 past days, not including today
             val numberOfEarlyPeakDays = 2 // Number of days to have an early morning peak
             val earlyPeakDayIndices = (0 until numberOfDays).shuffled(Random).take(numberOfEarlyPeakDays).toSet()
 
@@ -507,16 +507,22 @@ fun MultiDayHourlyHeatmapGrid(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(cellSpacing)
             ) {
-                val dateText = if (dayIndex == 0) { // This logic makes the top row "TODAY"
-                    "TODAY "
-                } else {
-                    val tempCalendar = Calendar.getInstance()
-                    // To show days in sequence from oldest to newest, with "TODAY" at the bottom:
-                    // tempCalendar.add(Calendar.DAY_OF_YEAR, -(numberOfDays - 1 - dayIndex))
-                    // To show days in sequence from newest to oldest, with "TODAY" at the top:
-                    tempCalendar.add(Calendar.DAY_OF_YEAR, -dayIndex)
-                    sdf.format(tempCalendar.time).toUpperCase(Locale.getDefault())
-                }
+                // val dateText = if (dayIndex == 0) { // This logic makes the top row "TODAY"
+                //     "TODAY "
+                // } else {
+                //     val tempCalendar = Calendar.getInstance()
+                //     // To show days in sequence from oldest to newest, with "TODAY" at the bottom:
+                //     // tempCalendar.add(Calendar.DAY_OF_YEAR, -(numberOfDays - 1 - dayIndex))
+                //     // To show days in sequence from newest to oldest, with "TODAY" at the top:
+                //     tempCalendar.add(Calendar.DAY_OF_YEAR, -dayIndex)
+                //     sdf.format(tempCalendar.time).toUpperCase(Locale.getDefault())
+                // }
+                val tempCalendar = Calendar.getInstance()
+                // dayIndex = 0 (top row, newest data) is yesterday.
+                // dayIndex = 1 is day before yesterday, and so on.
+                // The date is (Today - (dayIndex + 1) days).
+                tempCalendar.add(Calendar.DAY_OF_YEAR, -(dayIndex + 1))
+                val dateText = sdf.format(tempCalendar.time).toUpperCase(Locale.getDefault())
                 Text(
                     text = dateText,
                     modifier = Modifier.width(dayLabelWidth),
@@ -525,7 +531,7 @@ fun MultiDayHourlyHeatmapGrid(
                 )
 
                 // The dailyHourlyData is already in order from oldest (index 0) to newest (index numberOfDays-1)
-                // So, if we want to display "TODAY" (most recent) at the top of the grid (dayIndex 0),
+                // So, if we want to display "YESTERDAY" (most recent PAST day) at the top of the grid (dayIndex 0),
                 // we need to access the end of the dailyHourlyData list.
                 val dataIndex = numberOfDays - 1 - dayIndex 
                 (0 until 24).forEach { hourIndex ->
