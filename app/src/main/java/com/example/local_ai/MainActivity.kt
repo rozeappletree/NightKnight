@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.local_ai.data.db.AppDatabase // Assuming AppDatabase is your Room database class
+import com.example.local_ai.ui.theme.HeadingBlue // Added this import
 import com.example.local_ai.ui.theme.LocalaiTheme
 import com.example.local_ai.ui.usage.AppUsageViewModel
 import com.example.local_ai.ui.usage.DailyUsageDigestViewModel // Added
@@ -390,15 +391,15 @@ fun DigestSection(stats: List<DigestGeneralStats>) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .background(HeadingBlue) // Changed background color
                     .padding(vertical = 8.dp, horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Digest", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.4f))
-                Text("Usage time", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.2f))
-                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f)) 
-                Text("Check device", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.2f))
-                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f))
+                Text("Digest", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.4f), color = Color.White)
+                Text("Usage time", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.2f), color = Color.White)
+                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f), color = Color.White)
+                Text("Check device", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.2f), color = Color.White)
+                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f), color = Color.White)
             }
             stats.forEachIndexed { index, stat ->
                 Row(
@@ -429,15 +430,15 @@ fun AppUsageListSection(title: String, apps: List<AppUsageStat>) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .background(HeadingBlue) // Changed background color
                     .padding(vertical = 8.dp, horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.4f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("Usage time", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.2f))
-                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f)) 
-                Text("Access count", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.2f))
-                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f))
+                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.4f), maxLines = 1, overflow = TextOverflow.Ellipsis, color = Color.White)
+                Text("Usage time", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.2f), color = Color.White)
+                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f), color = Color.White)
+                Text("Access count", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.2f), color = Color.White)
+                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f), color = Color.White)
             }
             if (apps.isEmpty()){
                  Text("No data available for $title", modifier = Modifier.padding(12.dp).align(Alignment.CenterHorizontally))
@@ -472,13 +473,13 @@ fun CategoryUsageSection(categories: List<CategoryUsageStat>) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .background(HeadingBlue) // Changed background color
                     .padding(vertical = 8.dp, horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Category", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.6f))
-                Text("Usage time (%)", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.3f))
-                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f))
+                Text("Category", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.6f), color = Color.White)
+                Text("Usage time (%)", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.3f), color = Color.White)
+                Text("Change", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End, modifier = Modifier.weight(0.1f), color = Color.White)
             }
             categories.forEachIndexed { index, category ->
                 Row(
@@ -507,13 +508,13 @@ fun HourlyUsageSection(hourlyData: List<HourlyUsageStat>) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .background(HeadingBlue) // Changed background color
                     .padding(vertical = 8.dp, horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Time", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.2f))
-                Text("Usage time", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.5f)) // This text was part of the original request's appearance
-                Text("", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.3f), textAlign = TextAlign.End) //This refers to the usage time string like "56m 42s"
+                Text("Time", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.2f), color = Color.White)
+                Text("Usage time", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.5f), color = Color.White) // This text was part of the original request's appearance
+                Text("", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(0.3f), textAlign = TextAlign.End, color = Color.White) //This refers to the usage time string like "56m 42s"
             }
             hourlyData.forEachIndexed { index, hourStat ->
                 Row(
@@ -571,4 +572,3 @@ fun GreetingPreview() {
         )
     }
 }
-

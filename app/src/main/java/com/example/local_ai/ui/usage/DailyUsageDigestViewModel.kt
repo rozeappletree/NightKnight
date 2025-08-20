@@ -12,6 +12,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.random.Random
 
 // Data classes (assuming these are already defined as per your previous context)
 data class DigestGeneralStats(
@@ -28,12 +29,14 @@ data class AppUsageStat(
     val usageTimeChange: String,
     val accessCount: String,
     val accessCountChange: String
+    // Removed color field
 )
 
 data class CategoryUsageStat(
     val categoryName: String,
     val usageTimePercentage: String, // e.g., "2h 37m (36.2%)"
     val usageTimeChange: String
+    // Removed color field
 )
 
 data class HourlyUsageStat(
@@ -81,81 +84,80 @@ class DailyUsageDigestViewModel(
             // Set current date string
             _currentDate.value = SimpleDateFormat("EEEE, d MMMM, yyyy", Locale.getDefault()).format(dateToLoad.time)
 
+            // Calculate dates for "Daily Average" and the two previous days
+            val digestSdf = SimpleDateFormat("d MMM", Locale.getDefault())
+            val calendar = dateToLoad.clone() as Calendar
+
+            calendar.add(Calendar.DAY_OF_YEAR, -1)
+            val day1Date = calendar.time
+            val day1DateString = digestSdf.format(day1Date)
+
+            calendar.add(Calendar.DAY_OF_YEAR, -1)
+            val day2Date = calendar.time
+            val day2DateString = digestSdf.format(day2Date)
+            
+            val dailyAveragePeriod = "Daily Average\n($day2DateString - $day1DateString)"
+
             // --- Placeholder data for other sections ---
-            // TODO: Replace these with actual data fetching logic using your DAO
             _digestStats.value = listOf(
-                DigestGeneralStats("Thu, 7 Aug", "7h 16m", "-19%", "#21", "-40%"),
-                // ... other placeholder stats
+                DigestGeneralStats(dailyAveragePeriod, "6h 45m", "+5%", "85", "-10%"),
+                DigestGeneralStats(SimpleDateFormat("EEE, d MMM", Locale.getDefault()).format(day1Date), "7h 16m", "-19%", "121", "+15%"),
+                DigestGeneralStats(SimpleDateFormat("EEE, d MMM", Locale.getDefault()).format(day2Date), "8h 30m", "+25%", "98", "-5%")
             )
             _topApps.value = listOf(
-                AppUsageStat("minimalist phone", "2h 13m", "+90%", "#217", "-3%"),
-                // ... other placeholder apps
+                AppUsageStat("Minimalist App", "3h 30m", "+20%", "150", "+5%"),
+                AppUsageStat("Browser", "1h 45m", "-10%", "60", "-15%"),
+                AppUsageStat("Email Client", "0h 55m", "+5%", "30", "+10%"),
+                AppUsageStat("Reading App", "0h 45m", "+100%", "20", "+50%")
             )
-            _pinnedApps.value = emptyList()
+            _pinnedApps.value = listOf(
+                AppUsageStat("Meditation App", "0h 25m", "+15%", "10", "+2%"),
+                AppUsageStat("Todo List", "0h 15m", "-5%", "25", "-8%")
+            )
             _categoryUsage.value = listOf(
-                CategoryUsageStat("Productivity", "2h 37m (36.2%)", "+74%"),
-                // ... other placeholder categories
+                CategoryUsageStat("Productivity", "3h 10m (42.0%)", "+12%"),
+                CategoryUsageStat("Communication", "1h 50m (24.3%)", "-5%"),
+                CategoryUsageStat("Information", "1h 15m (16.6%)", "+30%"),
+                CategoryUsageStat("Utilities", "0h 40m (8.8%)", "-20%"),
+                CategoryUsageStat("Wellness", "0h 25m (5.5%)", "+8%")
             )
-            _ignoredAppCount.value = 0 // TODO: Fetch actual count
-            // --- End placeholder data ---
+            _ignoredAppCount.value = 3 // Example: 3 apps ignored
 
-
-
-            // --- Load Hourly Usage Data from DAO ---
-            val calendar = Calendar.getInstance()
-            calendar.timeInMillis = dateToLoad.timeInMillis // Use the passed date
-
-            val hourlyStatsList = mutableListOf<HourlyUsageStat>()
-            var maxHourlyUsageForDay: Long = 1L // Avoid division by zero, min 1ms
-
+            // --- Dummy Hourly Usage Data for Demo ---
+            val hourCalendar = Calendar.getInstance() // Keep for hour formatting
             val hourFormatter = SimpleDateFormat("h a", Locale.getDefault())
+            val dummyHourlyStats = mutableListOf<HourlyUsageStat>()
+            val random = Random(dateToLoad.timeInMillis) // Seed random for consistency on same date
 
+            // Generate more varied dummy data for hourly usage
             for (hour in 0..23) {
-                // Set calendar to the start of the current hour for the given date
-                calendar.set(Calendar.HOUR_OF_DAY, hour)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val hourStartTimestamp = calendar.timeInMillis
-
-                // Set calendar to the end of the current hour (start of next hour)
-                calendar.add(Calendar.HOUR_OF_DAY, 1)
-                val hourEndTimestamp = calendar.timeInMillis
-                calendar.add(Calendar.HOUR_OF_DAY, -1) // Reset for next iteration
-
-
-                // Fetch summed usage for this specific hour from the DAO
-                val usageMillisForHour = try {
-                    usageDao.getSummedUsageForHour(hourStartTimestamp, hourEndTimestamp) ?: 0L
-                } catch (e: Exception) {
-                    // Handle any exceptions from DAO, e.g., log error
-                    // For now, defaulting to 0
-                    0L
-                }
-
-
-                if (usageMillisForHour > maxHourlyUsageForDay) {
-                    maxHourlyUsageForDay = usageMillisForHour
-                }
-
-                val usageTimeString = formatDuration(usageMillisForHour)
-                // Get the string representation for the hour (e.g., "12 AM", "1 PM")
                 val tempCal = Calendar.getInstance()
                 tempCal.set(Calendar.HOUR_OF_DAY, hour)
                 val hourString = hourFormatter.format(tempCal.time)
 
-
-                hourlyStatsList.add(
+                // Simulate some peak hours and some low usage hours
+                val usageMillis = when (hour) {
+                    0 -> random.nextLong(10 * 60 * 1000) // 0-10 mins for 12 AM (midnight)
+                    in 1..5 -> 0L // 0 usage for 1 AM to 5 AM
+                    in 6..8 -> random.nextLong(20 * 60 * 1000, 50 * 60 * 1000) // 20-50 mins morning peak
+                    in 9..11 -> random.nextLong(15 * 60 * 1000, 40 * 60 * 1000) // 15-40 mins late morning
+                    in 12..13 -> random.nextLong(30 * 60 * 1000, 60 * 60 * 1000) // 30-60 mins lunch peak
+                    in 14..17 -> random.nextLong(20 * 60 * 1000, 45 * 60 * 1000) // 20-45 mins afternoon
+                    in 18..20 -> random.nextLong(40 * 60 * 1000, 70 * 60 * 1000) // 40-70 mins evening peak
+                    else -> random.nextLong(5 * 60 * 1000, 25 * 60 * 1000) // 5-25 mins late night
+                }
+                dummyHourlyStats.add(
                     HourlyUsageStat(
                         hour = hourString,
-                        usageTime = usageTimeString,
-                        usageProportion = 0f // Will be calculated in a second pass
+                        usageTime = formatDuration(usageMillis),
+                        usageProportion = 0f // Will be calculated next
                     )
                 )
             }
 
-            // Second pass to calculate proportion based on the max usage in any hour of that day
-            _hourlyUsage.value = hourlyStatsList.map { stat ->
+            // Calculate proportions based on the max usage in the dummy data
+            val maxHourlyUsageForDay = dummyHourlyStats.maxOfOrNull { parseDuration(it.usageTime) } ?: 1L
+            _hourlyUsage.value = dummyHourlyStats.map { stat ->
                 val usageMillis = parseDuration(stat.usageTime)
                 stat.copy(usageProportion = if (maxHourlyUsageForDay > 0) usageMillis.toFloat() / maxHourlyUsageForDay else 0f)
             }
