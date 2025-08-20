@@ -74,6 +74,7 @@ import com.example.local_ai.ui.usage.FormattedAppUsageEvent
 import com.example.local_ai.ui.usage.HourlyUsageStat // Added
 // import com.example.local_ai.ui.usage.UsageDao // Removed this import
 import com.example.local_ai.data.db.AppUsageDao // Added this import
+import com.example.local_ai.ui.AppUsageStatsScreen // Added for Heatmap
 import java.util.Calendar // Added for the fix
 
 class MainActivity : ComponentActivity() {
@@ -121,7 +122,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             LocalaiTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    val pagerState = rememberPagerState(pageCount = { 3 })
+                    val pagerState = rememberPagerState(pageCount = { 4 }) // Increased page count
                     val context = LocalContext.current // Added for DAO
 
                     // Create the ViewModel factory
@@ -145,12 +146,17 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             )
-                            1 -> DailyActivitiesPage(
+                            1 -> AppUsageStatsScreen( // Added Heatmap Screen
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .padding(innerPadding)
                             )
-                            2 -> DailyUsageDigestPage(
+                            2 -> DailyActivitiesPage(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(innerPadding)
+                            )
+                            3 -> DailyUsageDigestPage(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .padding(innerPadding),
