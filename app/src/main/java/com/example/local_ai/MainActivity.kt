@@ -270,9 +270,10 @@ fun DailyActivitiesPage(
                 .fillMaxWidth()
                 .padding(vertical = 8.dp)
         ) {
-            Text("Time", modifier = Modifier.weight(0.25f), style = MaterialTheme.typography.titleSmall)
-            Text("App name", modifier = Modifier.weight(0.5f), style = MaterialTheme.typography.titleSmall)
-            Text("Usage time", modifier = Modifier.weight(0.25f), textAlign = TextAlign.End, style = MaterialTheme.typography.titleSmall)
+            Text("Time", modifier = Modifier.weight(0.2f), style = MaterialTheme.typography.titleSmall)
+            Text("App name", modifier = Modifier.weight(0.4f), style = MaterialTheme.typography.titleSmall)
+            Text("Usage time", modifier = Modifier.weight(0.2f), textAlign = TextAlign.End, style = MaterialTheme.typography.titleSmall)
+            Text("Access Count", modifier = Modifier.weight(0.2f), textAlign = TextAlign.End, style = MaterialTheme.typography.titleSmall)
         }
         Divider()
 
@@ -299,9 +300,10 @@ fun DailyActivityRow(activity: FormattedAppUsageEvent) {
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(activity.time, modifier = Modifier.weight(0.25f))
-        Text(activity.appName, modifier = Modifier.weight(0.5f))
-        Text(activity.usageTime, modifier = Modifier.weight(0.25f), textAlign = TextAlign.End)
+        Text(activity.time, modifier = Modifier.weight(0.2f))
+        Text(activity.appName, modifier = Modifier.weight(0.4f))
+        Text(activity.usageTime, modifier = Modifier.weight(0.2f), textAlign = TextAlign.End)
+        Text(activity.accessCount.toString(), modifier = Modifier.weight(0.2f), textAlign = TextAlign.End)
     }
 }
 
