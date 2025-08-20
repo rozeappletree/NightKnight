@@ -63,6 +63,7 @@ class FloatingIconService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var floatingView: View
     private lateinit var floatingIconText: TextView
+    private lateinit var appUsageLabelText: TextView // Added for app_usage_label
     private lateinit var params: WindowManager.LayoutParams
     private var initialX: Int = 0
     private var initialY: Int = 0
@@ -137,6 +138,7 @@ class FloatingIconService : Service() {
     private fun setupWindowManagerAndFloatingView() {
         floatingView = LayoutInflater.from(this).inflate(R.layout.floating_icon_layout, null)
         floatingIconText = floatingView.findViewById(R.id.floating_icon_text)
+        appUsageLabelText = floatingView.findViewById(R.id.app_usage_label) // Initialized app_usage_label
 
         val layoutParamsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -180,6 +182,7 @@ class FloatingIconService : Service() {
         screenWidth = displayMetrics.widthPixels
 
         updateText("Loading...")
+        updateAppUsageLabelText("App usage") // Initial text for app usage label
 
         floatingView.setOnTouchListener { _, event ->
             handleTouchEvent(event)
@@ -355,6 +358,7 @@ class FloatingIconService : Service() {
         try {
             Log.d(TAG, "Generating new wellbeing message...")
             val currentApp = getCurrentForegroundApp() // Get current app
+            updateAppUsageLabelText("App usage: $currentApp") // Update app usage label
 
             this.conversation!!.generateResponse("Give me a digital wellbeing tip.")
                 .onEach { response ->
@@ -383,6 +387,7 @@ class FloatingIconService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start message generation flow", e)
             val currentApp = getCurrentForegroundApp() // Get current app even for this error
+            updateAppUsageLabelText("App usage: $currentApp") // Update app usage label even in case of error
             updateText("[$currentApp] Error: Could not start generation.")
         }
     }
@@ -537,6 +542,16 @@ class FloatingIconService : Service() {
                 } else {
                     floatingIconText.visibility = View.GONE
                 }
+            }
+        }
+    }
+
+    // Function to update app_usage_label text
+    private fun updateAppUsageLabelText(text: String) {
+        Handler(Looper.getMainLooper()).post {
+            if (::appUsageLabelText.isInitialized) {
+                appUsageLabelText.text = text
+                appUsageLabelText.visibility = View.VISIBLE
             }
         }
     }

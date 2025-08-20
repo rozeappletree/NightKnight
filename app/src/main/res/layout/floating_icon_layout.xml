@@ -36,6 +36,8 @@
         android:text="Device usage"
         android:textColor="@android:color/white"
         android:textSize="9sp"
+        android:background="@color/translucent_black"
+        android:padding="2dp"
         android:layout_marginStart="54dp"
         android:layout_marginTop="3dp"/>
 
@@ -61,6 +63,8 @@
         android:text="App usage"
         android:textColor="@android:color/white"
         android:textSize="9sp"
+        android:background="@color/translucent_black"
+        android:padding="2dp"
         android:layout_marginStart="54dp"
         android:layout_marginTop="0dp"/>
 
