@@ -15,6 +15,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.app.usage.UsageEvents
+import android.app.usage.UsageStats // Added import
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
@@ -130,9 +131,6 @@ class FloatingIconService : Service() {
             startDataCollection()
         } else {
             Log.w(TAG, "Usage stats permission NOT granted. Data collection will not start.")
-            // Consider sending a broadcast or updating UI to inform MainActivity
-            // if you want to prompt the user again from the service.
-            // For now, MainActivity handles the initial prompt.
         }
     }
 
@@ -298,6 +296,50 @@ class FloatingIconService : Service() {
         }
     }
 
+    private fun getCurrentForegroundApp(): String {
+        if (!hasUsageStatsPermission(this)) {
+            Log.w(TAG, "Cannot get foreground app, permission denied.")
+            return "Unknown App (No permission)"
+        }
+
+        val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+        val time = System.currentTimeMillis()
+        // Query for events in the last 1 minute.
+        val usageEvents = usageStatsManager.queryEvents(time - TimeUnit.MINUTES.toMillis(1), time)
+        val event = UsageEvents.Event() // Re-use event object
+
+        var lastForegroundEventTime: Long = 0
+        var lastForegroundPackage: String? = null
+
+        while (usageEvents.hasNextEvent()) {
+            usageEvents.getNextEvent(event)
+            if (event.eventType == UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                if (event.timeStamp > lastForegroundEventTime) {
+                    lastForegroundEventTime = event.timeStamp
+                    lastForegroundPackage = event.packageName
+                }
+            }
+        }
+
+        return if (lastForegroundPackage != null) {
+            getAppNameFromPackage(lastForegroundPackage, this)
+        } else {
+            // Fallback: Check most recent app from usage stats (less real-time)
+            val stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - TimeUnit.MINUTES.toMillis(1), time)
+            if (stats != null && stats.isNotEmpty()) {
+                val sortedStats = stats.sortedByDescending { it.lastTimeUsed }
+                if (sortedStats.isNotEmpty()) {
+                    // Check if the most recent app was used very recently (e.g., within last 10 seconds)
+                    if (System.currentTimeMillis() - sortedStats[0].lastTimeUsed < TimeUnit.SECONDS.toMillis(10)) {
+                        return getAppNameFromPackage(sortedStats[0].packageName!!, this)
+                    }
+                }
+            }
+            "Unknown App" // Default if no foreground app is reliably found
+        }
+    }
+
+
     private suspend fun generateWellbeingMessage() {
         val runner = this.modelRunner ?: run {
             Log.w(TAG, "ModelRunner not available for message generation.")
@@ -312,6 +354,7 @@ class FloatingIconService : Service() {
         val responseBuffer = StringBuilder()
         try {
             Log.d(TAG, "Generating new wellbeing message...")
+            val currentApp = getCurrentForegroundApp() // Get current app
 
             this.conversation!!.generateResponse("Give me a digital wellbeing tip.")
                 .onEach { response ->
@@ -321,23 +364,26 @@ class FloatingIconService : Service() {
                 }
                 .onCompletion { throwable ->
                     if (throwable == null) {
-                        val message = responseBuffer.toString().trim()
-                        Log.i(TAG, "Generated message: $message")
-                        updateText(message)
-                        updateNotification("Reminder: ${message.take(20)}...")
+                        val wellbeingMessage = responseBuffer.toString().trim()
+                        val finalMessage = "[$currentApp] $wellbeingMessage"
+                        Log.i(TAG, "Generated message for $currentApp: $wellbeingMessage")
+                        updateText(finalMessage)
+                        // Adjust take() if needed for notification length
+                        updateNotification("[$currentApp] ${wellbeingMessage.take(20)}...")
                     } else {
                         Log.e(TAG, "Message generation error (onCompletion)", throwable)
-                        updateText("Error generating reminder.")
+                        updateText("[$currentApp] Error generating reminder.")
                     }
                 }
                 .catch { e ->
                     Log.e(TAG, "Message generation exception (catch)", e)
-                    updateText("Error: Message generation failed.")
+                    updateText("[$currentApp] Error: Message generation failed.")
                 }
                 .collect()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start message generation flow", e)
-            updateText("Error: Could not start generation.")
+            val currentApp = getCurrentForegroundApp() // Get current app even for this error
+            updateText("[$currentApp] Error: Could not start generation.")
         }
     }
 
@@ -379,8 +425,6 @@ class FloatingIconService : Service() {
         val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val calendar = Calendar.getInstance()
         val endTime = calendar.timeInMillis
-        // Query a window. Adjust start time if you want to avoid duplicate processing
-        // or ensure no gaps if service restarts. For now, simple fixed window.
         calendar.add(Calendar.MILLISECOND, (-DATA_QUERY_WINDOW_MS).toInt())
         val startTime = calendar.timeInMillis
 
@@ -396,55 +440,48 @@ class FloatingIconService : Service() {
                 eventsProcessed++
 
                 val appName: String
-                val eventTypeString: String
                 var appUsageEvent: AppUsageEvent? = null
 
                 when (event.eventType) {
                     UsageEvents.Event.MOVE_TO_FOREGROUND -> {
                         appName = getAppNameFromPackage(event.packageName, this@FloatingIconService)
-                        eventTypeString = "APP_USAGE_FG"
                         Log.d(TAG, "Event: FG - $appName at ${formatTime(event.timeStamp)}")
                         appUsageEvent = AppUsageEvent(
                             timestamp = event.timeStamp,
                             appName = appName,
-                            usageTimeMillis = 0L, // Simplified: duration calculation needs pairing
+                            usageTimeMillis = 0L, 
                             eventType = "APP_USAGE",
                             sessionOpenCount = 1
                         )
                     }
                     UsageEvents.Event.MOVE_TO_BACKGROUND -> {
                          appName = getAppNameFromPackage(event.packageName, this@FloatingIconService)
-                         eventTypeString = "APP_USAGE_BG" // We are not storing this yet
                          Log.d(TAG, "Event: BG - $appName at ${formatTime(event.timeStamp)}")
-                        // In a more complex setup, you'd use this to calculate duration for a previous FG event.
                     }
-                    UsageEvents.Event.SCREEN_INTERACTIVE -> { // Screen became interactive (unlock)
+                    UsageEvents.Event.SCREEN_INTERACTIVE -> { 
                         appName = "Screen on (unlocked)"
-                        eventTypeString = "SYSTEM_EVENT_SCREEN_ON"
                          Log.d(TAG, "Event: SCREEN_ON at ${formatTime(event.timeStamp)}")
                         appUsageEvent = AppUsageEvent(
                             timestamp = event.timeStamp,
                             appName = appName,
                             usageTimeMillis = 0L,
                             eventType = "SYSTEM_EVENT",
-                            sessionOpenCount = 1 // Or 0 if not counted as "access"
+                            sessionOpenCount = 1 
                         )
                     }
-                    UsageEvents.Event.SCREEN_NON_INTERACTIVE -> { // Screen became non-interactive (off/lock)
+                    UsageEvents.Event.SCREEN_NON_INTERACTIVE -> { 
                         appName = "Screen off (locked)"
-                        eventTypeString = "SYSTEM_EVENT_SCREEN_OFF"
                         Log.d(TAG, "Event: SCREEN_OFF at ${formatTime(event.timeStamp)}")
                         appUsageEvent = AppUsageEvent(
                             timestamp = event.timeStamp,
                             appName = appName,
-                            usageTimeMillis = 0L, // Duration here could be the time it was off, if calculated later
+                            usageTimeMillis = 0L, 
                             eventType = "SYSTEM_EVENT",
                             sessionOpenCount = 0
                         )
                     }
                     UsageEvents.Event.DEVICE_STARTUP -> {
                         appName = "Device boot"
-                        eventTypeString = "SYSTEM_EVENT_BOOT"
                         Log.d(TAG, "Event: DEVICE_BOOT at ${formatTime(event.timeStamp)}")
                         appUsageEvent = AppUsageEvent(
                             timestamp = event.timeStamp,
@@ -456,7 +493,6 @@ class FloatingIconService : Service() {
                     }
                      UsageEvents.Event.DEVICE_SHUTDOWN -> {
                         appName = "Device shutdown"
-                        eventTypeString = "SYSTEM_EVENT_SHUTDOWN"
                          Log.d(TAG, "Event: DEVICE_SHUTDOWN at ${formatTime(event.timeStamp)}")
                         appUsageEvent = AppUsageEvent(
                             timestamp = event.timeStamp,
@@ -466,10 +502,7 @@ class FloatingIconService : Service() {
                             sessionOpenCount = 0
                         )
                     }
-                    // Add more event types as needed:
-                    // UsageEvents.Event.KEYGUARD_SHOWN, KEYGUARD_HIDDEN, CONFIGURATION_CHANGE, etc.
                     else -> {
-                        // Optional: Log unknown or unhandled event types
                         // Log.v(TAG, "Unhandled event type: ${event.eventType} for package ${event.packageName}")
                     }
                 }
@@ -547,8 +580,6 @@ class FloatingIconService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Service onStartCommand received.")
-        // Re-check permission and potentially start data collection if it wasn't started in onCreate
-        // (e.g., if permission was granted after service was already created but before it was started by toggle)
         if (dataCollectionJob == null || !dataCollectionJob!!.isActive) {
             if (hasUsageStatsPermission(this)) {
                 Log.d(TAG, "onStartCommand: Usage stats permission granted. Ensuring data collection is running.")
@@ -564,7 +595,7 @@ class FloatingIconService : Service() {
         super.onDestroy()
         Log.d(TAG, "Service destroying...")
         messageGenerationJob?.cancel()
-        dataCollectionJob?.cancel() // Cancel data collection job
+        dataCollectionJob?.cancel() 
         serviceScope.cancel()
 
         runBlocking {
