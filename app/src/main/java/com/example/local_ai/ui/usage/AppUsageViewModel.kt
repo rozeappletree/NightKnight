@@ -17,7 +17,8 @@ import java.util.concurrent.TimeUnit
 data class FormattedAppUsageEvent(
     val time: String,
     val appName: String,
-    val usageTime: String
+    val usageTime: String,
+    val accessCount: Int
 )
 
 class AppUsageViewModel(application: Application) : AndroidViewModel(application) {
@@ -51,12 +52,13 @@ class AppUsageViewModel(application: Application) : AndroidViewModel(application
 
             appUsageDao.getEventsForPeriod(startTimeMillis, endTimeMillis)
                 .collect { events ->
-                    _dailyActivities.value = events.map { formatEvent(it) }
+                    val appAccessCounts = events.groupingBy { it.appName }.eachCount()
+                    _dailyActivities.value = events.map { formatEvent(it, appAccessCounts[it.appName] ?: 0) }
                 }
         }
     }
 
-    private fun formatEvent(event: AppUsageEvent): FormattedAppUsageEvent {
+    private fun formatEvent(event: AppUsageEvent, accessCount: Int): FormattedAppUsageEvent {
         val timeString = timeFormatter.format(event.timestamp)
         
         val durationMillis = event.usageTimeMillis
@@ -81,7 +83,8 @@ class AppUsageViewModel(application: Application) : AndroidViewModel(application
         return FormattedAppUsageEvent(
             time = timeString,
             appName = event.appName,
-            usageTime = usageString
+            usageTime = usageString,
+            accessCount = accessCount
         )
     }
 
