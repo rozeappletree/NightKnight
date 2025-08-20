@@ -56,6 +56,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Calendar
 import java.util.Random // Self-added, used in code
 import java.util.concurrent.TimeUnit
@@ -85,7 +86,8 @@ class FloatingIconService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var modelRunner: ModelRunner? = null
     private var conversation: Conversation? = null
-    private var messageGenerationJob: Job? = null
+    private var periodicMessageTriggerJob: Job? = null
+    private var currentMessageGenerationJob: Job? = null
     private val gson = GsonBuilder().registerLeapAdapters().create()
 
     private lateinit var appUsageDao: AppUsageDao
@@ -148,7 +150,8 @@ class FloatingIconService : Service() {
                 "⚔\uFE0F RULE:  \n" +
                 "Your replies must always feel clever, witty, and knightly—never bland warnings. Keep them under 30 words.\n" +
                 "\n\nImportant note: \n- Do not include double quotes in your response\n - Do not include full app name like com.*\n"
-        const val MESSAGE_REFRESH_INTERVAL_MS = 5000L
+        const val MESSAGE_REFRESH_INTERVAL_MS = 15000L
+        const val GENERATION_TIMEOUT_MS = 30000L // 30 seconds timeout for message generation
         const val NOTIFICATION_CHANNEL_ID = "FloatingIconServiceChannel"
         const val NOTIFICATION_ID = 1
         const val TAG = "FloatingIconService"
@@ -343,10 +346,39 @@ class FloatingIconService : Service() {
     }
 
     private fun startPeriodicMessageGeneration() {
-        messageGenerationJob?.cancel()
-        messageGenerationJob = serviceScope.launch {
+        periodicMessageTriggerJob?.cancel() // Cancel any existing periodic job
+        currentMessageGenerationJob?.cancel() // Cancel any ongoing generation job as well before starting a new periodic trigger
+
+        periodicMessageTriggerJob = serviceScope.launch {
             while (isActive) {
-                generateWellbeingMessage()
+                if (currentMessageGenerationJob == null || !currentMessageGenerationJob!!.isActive) {
+                    currentMessageGenerationJob = launch { // Launch new generation in its own coroutine
+                        val result = withTimeoutOrNull(GENERATION_TIMEOUT_MS) {
+                            generateWellbeingMessage()
+                        }
+                        if (result == null) {
+                            Log.w(TAG, "Message generation timed out after ${GENERATION_TIMEOUT_MS}ms.")
+                            if (serviceScope.isActive) { // Check scope before UI update
+                                updateText("Timeout: Knight is pondering too long...")
+                            }
+                        }
+                    }
+                    currentMessageGenerationJob?.invokeOnCompletion { throwable ->
+                        // Clear the job reference once it's complete (successfully or exceptionally)
+                        // to allow new jobs to be scheduled.
+                        if (throwable != null && throwable !is kotlinx.coroutines.CancellationException) { // Don't log error for expected cancellation from timeout
+                            Log.e(TAG, "Message generation job completed with error", throwable)
+                        } else if (throwable is kotlinx.coroutines.CancellationException){
+                             Log.i(TAG, "Message generation job was cancelled (e.g. timeout or service destroyed).")
+                        }
+                        else {
+                            Log.d(TAG, "Message generation job completed successfully.")
+                        }
+                        currentMessageGenerationJob = null
+                    }
+                } else {
+                    Log.d(TAG, "Message generation already in progress. Skipping this interval.")
+                }
                 delay(MESSAGE_REFRESH_INTERVAL_MS)
             }
         }
@@ -395,7 +427,7 @@ class FloatingIconService : Service() {
     private suspend fun generateWellbeingMessage() {
         val runner = this.modelRunner ?: run {
             Log.w(TAG, "ModelRunner not available for message generation.")
-            updateText("Model not ready.")
+            if (serviceScope.isActive) updateText("Model not ready.")
             return
         }
 
@@ -415,42 +447,57 @@ class FloatingIconService : Service() {
                     randomGenerator.nextInt(101)
                 }
             }
-            updateAppUsageLabelAndProgress(currentApp, percentage)
+            if (serviceScope.isActive) updateAppUsageLabelAndProgress(currentApp, percentage)
 
             val userPrompt = "The user is currently using the app '$currentApp'. Their usage percentage for this app is $percentage%.  \n" +
                     "Generate a witty Roman-knight-style remark (≤30 words) persuading them to reduce screen time and sleep peacefully.\n" +
                     "Important note: Do not include double quotes in your response and full app name like com.*"
+            
+            if (!serviceScope.isActive) return // Early exit if service scope is cancelled
+
             this.conversation!!.generateResponse(userPrompt)
                 .onEach { response ->
+                    if (!serviceScope.isActive) kotlinx.coroutines.flow.SharingStarted.Companion.Lazily 
                     if (response is ai.liquid.leap.message.MessageResponse.Chunk) {
                         responseBuffer.append(response.text)
                     }
                 }
                 .onCompletion { throwable ->
+                    if (!serviceScope.isActive) return@onCompletion
+
                     if (throwable == null) {
                         val wellbeingMessage = responseBuffer.toString().trim()
-                        // val finalMessage = "[$currentApp] $wellbeingMessage"
                         val finalMessage = "$wellbeingMessage"
 
                         Log.i(TAG, "Generated message for $currentApp: $wellbeingMessage")
-                        updateText(finalMessage)
-                        updateNotification("[$currentApp] ${wellbeingMessage.take(20)}...")
+                        if (serviceScope.isActive) {
+                           updateText(finalMessage)
+                           updateNotification("[$currentApp] ${wellbeingMessage.take(20)}...")
+                        }
                     } else {
                         Log.e(TAG, "Message generation error (onCompletion)", throwable)
-                        updateText("[$currentApp] Error generating reminder.")
+                         if (serviceScope.isActive) updateText("[$currentApp] Error generating reminder.")
                     }
                 }
                 .catch { e ->
-                    Log.e(TAG, "Message generation exception (catch)", e)
-                    updateText("[$currentApp] Error: Message generation failed.")
+                    if (serviceScope.isActive) { 
+                        Log.e(TAG, "Message generation exception (catch)", e)
+                        updateText("[$currentApp] Error: Message generation failed.")
+                    } else {
+                        Log.w(TAG, "Message generation caught exception but scope is inactive.", e)
+                    }
                 }
                 .collect()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start message generation flow", e)
-            val currentApp = getCurrentForegroundApp()
-            val percentage = appUsagePercentages.getOrDefault(currentApp, 0)
-            updateAppUsageLabelAndProgress(currentApp, percentage)
-            updateText("[$currentApp] Error: Could not start generation.")
+             if (serviceScope.isActive) {
+                Log.e(TAG, "Failed to start message generation flow", e)
+                val currentApp = getCurrentForegroundApp() 
+                val percentage = appUsagePercentages.getOrDefault(currentApp, 0)
+                updateAppUsageLabelAndProgress(currentApp, percentage)
+                updateText("[$currentApp] Error: Could not start generation.")
+            } else {
+                 Log.w(TAG, "generateWellbeingMessage caught exception but scope is inactive.", e)
+            }
         }
     }
 
@@ -671,11 +718,12 @@ class FloatingIconService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Service destroying...")
-        messageGenerationJob?.cancel()
+        periodicMessageTriggerJob?.cancel()
+        currentMessageGenerationJob?.cancel()
         dataCollectionJob?.cancel()
-        serviceScope.cancel()
+        serviceScope.cancel() // This will cancel all coroutines launched in this scope
 
-        runBlocking {
+        runBlocking { 
             try {
                 modelRunner?.unload()
                 Log.i(TAG, "Model unloaded.")
@@ -690,7 +738,7 @@ class FloatingIconService : Service() {
         if (::binView.isInitialized && binView.parent != null) {
             windowManager.removeView(binView)
         }
-        stopForeground(true)
+        stopForeground(true) 
         Log.d(TAG, "Service destroyed.")
     }
 
@@ -730,10 +778,8 @@ class FloatingIconService : Service() {
         val binActualWidth = if (view2.width > 0) view2.width else binParams.width.takeIf { it > 0 } ?: 100
         val binActualHeight = if (view2.height > 0) view2.height else binParams.height.takeIf { it > 0 } ?: 100
 
-        // Calculate bin's position on screen based on its gravity and x, y offsets in LayoutParams
-        // For Gravity.BOTTOM | Gravity.START
         val binScreenX = binParams.x 
-        val binScreenY = screenHeight - binActualHeight - binParams.y // y is from bottom
+        val binScreenY = screenHeight - binActualHeight - binParams.y 
 
         val rect2Screen = Rect(
             binScreenX,
@@ -741,12 +787,6 @@ class FloatingIconService : Service() {
             binScreenX + binActualWidth,
             binScreenY + binActualHeight
         )
-        // Log.d(TAG, "Rect1 (FloatingView): $rect1")
-        // Log.d(TAG, "Rect2 (BinView Screen): $rect2Screen")
-        // Log.d(TAG, "BinView LayoutParams: x=${binParams.x}, y=${binParams.y}, width=${binParams.width}, height=${binParams.height}")
-        // Log.d(TAG, "Screen Dims: Height=$screenHeight, Width=$screenWidth")
-        // Log.d(TAG, "BinView actual dims: width=$binActualWidth, height=$binActualHeight")
-
         return Rect.intersects(rect1, rect2Screen)
     }
 }
