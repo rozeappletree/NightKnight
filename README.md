@@ -2,7 +2,7 @@
 
 # 🛡️`NightKnight`⚔️
 
-It comes at night.
+It comes at night - The Night Knight.
 
-Built with ❤️ by [@rozeappletree🐊](https://github.com/rozeappletree/)
+Built with ❤️ by [@rozeappletree🐊](https://github.com/rozeappletree/) using [LEAP SDK](https://leap.liquid.ai/) by [LiquidAI](https://www.liquid.ai/).
 
