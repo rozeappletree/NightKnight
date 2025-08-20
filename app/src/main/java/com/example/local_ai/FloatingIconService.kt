@@ -2,11 +2,11 @@ package com.example.local_ai
 
 import ai.liquid.leap.Conversation
 import ai.liquid.leap.LeapClient
-import ai.liquid.leap.ModelRunner
-import ai.liquid.leap.downloader.LeapDownloadableModel
-import ai.liquid.leap.downloader.LeapModelDownloader
+import ai.liquid.leap.ModelRunner // Added by user, used in code
+import ai.liquid.leap.downloader.LeapDownloadableModel // New path
+import ai.liquid.leap.downloader.LeapModelDownloader // New path
 import ai.liquid.leap.gson.registerLeapAdapters
-import ai.liquid.leap.message.MessageResponse
+import ai.liquid.leap.message.MessageResponse // New path
 import android.annotation.SuppressLint
 import android.app.AppOpsManager
 import android.app.Notification
@@ -15,7 +15,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.app.usage.UsageEvents
-import android.app.usage.UsageStats // Added import
+import android.app.usage.UsageStats // Added by user
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
@@ -35,6 +35,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ImageView
+import android.widget.ProgressBar // Self-added, used in code
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -56,6 +57,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.Calendar
+import java.util.Random // Self-added, used in code
 import java.util.concurrent.TimeUnit
 
 class FloatingIconService : Service() {
@@ -63,7 +65,11 @@ class FloatingIconService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var floatingView: View
     private lateinit var floatingIconText: TextView
-    private lateinit var appUsageLabelText: TextView // Added for app_usage_label
+    private lateinit var appUsageLabelText: TextView
+    private lateinit var appUsageProgressBar: ProgressBar
+    private val appUsagePercentages = mutableMapOf<String, Int>()
+    private val randomGenerator = Random()
+
     private lateinit var params: WindowManager.LayoutParams
     private var initialX: Int = 0
     private var initialY: Int = 0
@@ -82,12 +88,10 @@ class FloatingIconService : Service() {
     private var messageGenerationJob: Job? = null
     private val gson = GsonBuilder().registerLeapAdapters().create()
 
-    // Database and Data Collection
     private lateinit var appUsageDao: AppUsageDao
     private var dataCollectionJob: Job? = null
-    private val DATA_COLLECTION_INTERVAL_MS = TimeUnit.MINUTES.toMillis(15) // Collect every 15 mins
-    private val DATA_QUERY_WINDOW_MS = TimeUnit.HOURS.toMillis(1)       // Query last 1 hour of events
-
+    private val DATA_COLLECTION_INTERVAL_MS = TimeUnit.MINUTES.toMillis(15)
+    private val DATA_QUERY_WINDOW_MS = TimeUnit.HOURS.toMillis(1)
 
     companion object {
         const val MODEL_SLUG = "lfm2-1.2b"
@@ -123,10 +127,8 @@ class FloatingIconService : Service() {
             )
         }
 
-        // Initialize Database DAO
         appUsageDao = AppDatabase.getDatabase(this).appUsageDao()
 
-        // Start Data Collection if permission is granted
         if (hasUsageStatsPermission(this)) {
             Log.d(TAG, "Usage stats permission granted. Starting data collection.")
             startDataCollection()
@@ -138,7 +140,8 @@ class FloatingIconService : Service() {
     private fun setupWindowManagerAndFloatingView() {
         floatingView = LayoutInflater.from(this).inflate(R.layout.floating_icon_layout, null)
         floatingIconText = floatingView.findViewById(R.id.floating_icon_text)
-        appUsageLabelText = floatingView.findViewById(R.id.app_usage_label) // Initialized app_usage_label
+        appUsageLabelText = floatingView.findViewById(R.id.app_usage_label)
+        appUsageProgressBar = floatingView.findViewById(R.id.app_usage_bar)
 
         val layoutParamsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -182,7 +185,7 @@ class FloatingIconService : Service() {
         screenWidth = displayMetrics.widthPixels
 
         updateText("Loading...")
-        updateAppUsageLabelText("App usage") // Initial text for app usage label
+        updateAppUsageLabelAndProgress("App usage", 0)
 
         floatingView.setOnTouchListener { _, event ->
             handleTouchEvent(event)
@@ -200,7 +203,7 @@ class FloatingIconService : Service() {
                 showBinIcon()
             }
             MotionEvent.ACTION_MOVE -> {
-                params.x = initialX // Keep X coordinate constant
+                params.x = initialX
                 params.y = initialY + (event.rawY - initialTouchY).toInt()
                 windowManager.updateViewLayout(floatingView, params)
                 if (isViewOverlapping(floatingView, binView)) {
@@ -224,23 +227,22 @@ class FloatingIconService : Service() {
         }
     }
 
-
     private suspend fun loadModelAndStartMessageGeneration(onStatusChange: (String) -> Unit, onError: (Throwable) -> Unit) {
         try {
             val resolvingMsg = "Resolving model..."
             onStatusChange(resolvingMsg)
             updateText(resolvingMsg)
-            val modelToUse = LeapDownloadableModel.resolve(MODEL_SLUG, QUANTIZATION_SLUG)
+            val modelToUse = ai.liquid.leap.downloader.LeapDownloadableModel.resolve(MODEL_SLUG, QUANTIZATION_SLUG)
             if (modelToUse == null) {
                 throw RuntimeException("Model $QUANTIZATION_SLUG not found in Leap Model Library!")
             }
 
-            val modelDownloader = LeapModelDownloader(applicationContext)
+            val modelDownloader = ai.liquid.leap.downloader.LeapModelDownloader(applicationContext)
             val checkingStatusMsg = "Checking download status..."
             onStatusChange(checkingStatusMsg)
             updateText(checkingStatusMsg)
 
-            if (modelDownloader.queryStatus(modelToUse).type != LeapModelDownloader.ModelDownloadStatusType.DOWNLOADED) {
+            if (modelDownloader.queryStatus(modelToUse).type != ai.liquid.leap.downloader.LeapModelDownloader.ModelDownloadStatusType.DOWNLOADED) {
                 val requestingDownloadMsg = "Requesting model download..."
                 onStatusChange(requestingDownloadMsg)
                 Log.d(TAG, "MODEL DOWNLOAD CODE IS BEING TRIGGERED")
@@ -250,13 +252,13 @@ class FloatingIconService : Service() {
                     val status = modelDownloader.queryStatus(modelToUse)
                     var currentStatusMsg = ""
                     when (status.type) {
-                        LeapModelDownloader.ModelDownloadStatusType.NOT_ON_LOCAL -> {
+                        ai.liquid.leap.downloader.LeapModelDownloader.ModelDownloadStatusType.NOT_ON_LOCAL -> {
                             currentStatusMsg = "Model not downloaded. Waiting..."
                         }
-                        LeapModelDownloader.ModelDownloadStatusType.DOWNLOAD_IN_PROGRESS -> {
+                        ai.liquid.leap.downloader.LeapModelDownloader.ModelDownloadStatusType.DOWNLOAD_IN_PROGRESS -> {
                             currentStatusMsg = "Downloading: ${String.format("%.2f", status.progress * 100.0)}%"
                         }
-                        LeapModelDownloader.ModelDownloadStatusType.DOWNLOADED -> {
+                        ai.liquid.leap.downloader.LeapModelDownloader.ModelDownloadStatusType.DOWNLOADED -> {
                             currentStatusMsg = "Model downloaded."
                             isModelAvailable = true
                         }
@@ -292,7 +294,7 @@ class FloatingIconService : Service() {
     private fun startPeriodicMessageGeneration() {
         messageGenerationJob?.cancel()
         messageGenerationJob = serviceScope.launch {
-            while (isActive) { // Use isActive to respect cancellation
+            while (isActive) {
                 generateWellbeingMessage()
                 delay(MESSAGE_REFRESH_INTERVAL_MS)
             }
@@ -307,9 +309,8 @@ class FloatingIconService : Service() {
 
         val usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val time = System.currentTimeMillis()
-        // Query for events in the last 1 minute.
         val usageEvents = usageStatsManager.queryEvents(time - TimeUnit.MINUTES.toMillis(1), time)
-        val event = UsageEvents.Event() // Re-use event object
+        val event = UsageEvents.Event()
 
         var lastForegroundEventTime: Long = 0
         var lastForegroundPackage: String? = null
@@ -327,21 +328,18 @@ class FloatingIconService : Service() {
         return if (lastForegroundPackage != null) {
             getAppNameFromPackage(lastForegroundPackage, this)
         } else {
-            // Fallback: Check most recent app from usage stats (less real-time)
             val stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - TimeUnit.MINUTES.toMillis(1), time)
             if (stats != null && stats.isNotEmpty()) {
                 val sortedStats = stats.sortedByDescending { it.lastTimeUsed }
                 if (sortedStats.isNotEmpty()) {
-                    // Check if the most recent app was used very recently (e.g., within last 10 seconds)
                     if (System.currentTimeMillis() - sortedStats[0].lastTimeUsed < TimeUnit.SECONDS.toMillis(10)) {
                         return getAppNameFromPackage(sortedStats[0].packageName!!, this)
                     }
                 }
             }
-            "Unknown App" // Default if no foreground app is reliably found
+            "Unknown App"
         }
     }
-
 
     private suspend fun generateWellbeingMessage() {
         val runner = this.modelRunner ?: run {
@@ -357,12 +355,20 @@ class FloatingIconService : Service() {
         val responseBuffer = StringBuilder()
         try {
             Log.d(TAG, "Generating new wellbeing message...")
-            val currentApp = getCurrentForegroundApp() // Get current app
-            updateAppUsageLabelText("App usage: $currentApp") // Update app usage label
+            val currentApp = getCurrentForegroundApp()
+
+            val percentage = appUsagePercentages.getOrPut(currentApp) {
+                if (currentApp == "Unknown App" || currentApp == "Unknown App (No permission)") {
+                    0
+                } else {
+                    randomGenerator.nextInt(101)
+                }
+            }
+            updateAppUsageLabelAndProgress(currentApp, percentage)
 
             this.conversation!!.generateResponse("Give me a digital wellbeing tip.")
                 .onEach { response ->
-                    if (response is MessageResponse.Chunk) {
+                    if (response is ai.liquid.leap.message.MessageResponse.Chunk) {
                         responseBuffer.append(response.text)
                     }
                 }
@@ -372,7 +378,6 @@ class FloatingIconService : Service() {
                         val finalMessage = "[$currentApp] $wellbeingMessage"
                         Log.i(TAG, "Generated message for $currentApp: $wellbeingMessage")
                         updateText(finalMessage)
-                        // Adjust take() if needed for notification length
                         updateNotification("[$currentApp] ${wellbeingMessage.take(20)}...")
                     } else {
                         Log.e(TAG, "Message generation error (onCompletion)", throwable)
@@ -386,13 +391,13 @@ class FloatingIconService : Service() {
                 .collect()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start message generation flow", e)
-            val currentApp = getCurrentForegroundApp() // Get current app even for this error
-            updateAppUsageLabelText("App usage: $currentApp") // Update app usage label even in case of error
+            val currentApp = getCurrentForegroundApp()
+            val percentage = appUsagePercentages.getOrDefault(currentApp, 0)
+            updateAppUsageLabelAndProgress(currentApp, percentage)
             updateText("[$currentApp] Error: Could not start generation.")
         }
     }
 
-    // --- Data Collection Logic ---
     private fun hasUsageStatsPermission(context: Context): Boolean {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode = appOps.checkOpNoThrow(
@@ -410,7 +415,7 @@ class FloatingIconService : Service() {
             packageManager.getApplicationLabel(applicationInfo).toString()
         } catch (e: PackageManager.NameNotFoundException) {
             Log.w(TAG, "App name not found for package: $packageName")
-            packageName // Fallback to package name
+            packageName
         }
     }
 
@@ -437,7 +442,7 @@ class FloatingIconService : Service() {
 
         try {
             val queryEvents = usageStatsManager.queryEvents(startTime, endTime)
-            val event = UsageEvents.Event() // Re-use object
+            val event = UsageEvents.Event()
             var eventsProcessed = 0
 
             while (queryEvents.hasNextEvent()) {
@@ -456,7 +461,7 @@ class FloatingIconService : Service() {
                             appName = appName,
                             usageTimeMillis = 0L, 
                             eventType = "APP_USAGE",
-                            sessionOpenCount = 1
+                            sessionOpenCount = 1 
                         )
                     }
                     UsageEvents.Event.MOVE_TO_BACKGROUND -> {
@@ -471,7 +476,7 @@ class FloatingIconService : Service() {
                             appName = appName,
                             usageTimeMillis = 0L,
                             eventType = "SYSTEM_EVENT",
-                            sessionOpenCount = 1 
+                            sessionOpenCount = 1
                         )
                     }
                     UsageEvents.Event.SCREEN_NON_INTERACTIVE -> { 
@@ -480,9 +485,9 @@ class FloatingIconService : Service() {
                         appUsageEvent = AppUsageEvent(
                             timestamp = event.timeStamp,
                             appName = appName,
-                            usageTimeMillis = 0L, 
+                            usageTimeMillis = 0L,
                             eventType = "SYSTEM_EVENT",
-                            sessionOpenCount = 0
+                            sessionOpenCount = 0 
                         )
                     }
                     UsageEvents.Event.DEVICE_STARTUP -> {
@@ -507,9 +512,7 @@ class FloatingIconService : Service() {
                             sessionOpenCount = 0
                         )
                     }
-                    else -> {
-                        // Log.v(TAG, "Unhandled event type: ${event.eventType} for package ${event.packageName}")
-                    }
+                    else -> {}
                 }
 
                 appUsageEvent?.let {
@@ -530,8 +533,6 @@ class FloatingIconService : Service() {
         val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
         return sdf.format(java.util.Date(timestamp))
     }
-    // --- End Data Collection Logic ---
-
 
     private fun updateText(text: String) {
         Handler(Looper.getMainLooper()).post {
@@ -546,12 +547,18 @@ class FloatingIconService : Service() {
         }
     }
 
-    // Function to update app_usage_label text
-    private fun updateAppUsageLabelText(text: String) {
+    private fun updateAppUsageLabelAndProgress(appName: String, percentage: Int) {
         Handler(Looper.getMainLooper()).post {
-            if (::appUsageLabelText.isInitialized) {
-                appUsageLabelText.text = text
+            if (::appUsageLabelText.isInitialized && ::appUsageProgressBar.isInitialized) {
+                val displayText = if (appName == "Unknown App" || appName == "Unknown App (No permission)") {
+                    "App usage: N/A"
+                } else {
+                    "App usage: $appName - $percentage%"
+                }
+                appUsageLabelText.text = displayText
                 appUsageLabelText.visibility = View.VISIBLE
+                appUsageProgressBar.progress = percentage
+                appUsageProgressBar.visibility = View.VISIBLE
             }
         }
     }
@@ -580,7 +587,7 @@ class FloatingIconService : Service() {
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("Digital Wellbeing Reminder")
             .setContentText(contentText)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.mipmap.ic_knight)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
@@ -591,7 +598,6 @@ class FloatingIconService : Service() {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID, notification)
     }
-
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Service onStartCommand received.")
@@ -610,7 +616,7 @@ class FloatingIconService : Service() {
         super.onDestroy()
         Log.d(TAG, "Service destroying...")
         messageGenerationJob?.cancel()
-        dataCollectionJob?.cancel() 
+        dataCollectionJob?.cancel()
         serviceScope.cancel()
 
         runBlocking {
@@ -636,7 +642,11 @@ class FloatingIconService : Service() {
         if (!::binView.isInitialized) return
         Handler(Looper.getMainLooper()).post {
             if (binView.parent == null) {
-                 try { windowManager.addView(binView, binParams) } catch (e: Exception) { Log.e(TAG, "Error adding binView", e)}
+                 try {
+                     windowManager.addView(binView, binParams)
+                 } catch (e: Exception) {
+                     Log.e(TAG, "Error adding binView", e)
+                 }
             }
             binView.visibility = View.VISIBLE
         }
@@ -650,9 +660,10 @@ class FloatingIconService : Service() {
     }
 
    private fun isViewOverlapping(view1: View, view2: View): Boolean {
-        if (!::windowManager.isInitialized || view1.parent == null || view2.parent == null && view2.height == 0 && view2.width == 0) {
+        if (!::windowManager.isInitialized || !::floatingView.isInitialized || floatingView.parent == null || !::binView.isInitialized) {
             return false
         }
+
         val rect1 = Rect()
         view1.getHitRect(rect1)
 
@@ -660,16 +671,17 @@ class FloatingIconService : Service() {
         view1.getLocationOnScreen(location1)
         rect1.offsetTo(location1[0], location1[1])
 
+        val binActualWidth = if (view2.width > 0) view2.width else binParams.width.takeIf { it > 0 } ?: 100
+        val binActualHeight = if (view2.height > 0) view2.height else binParams.height.takeIf { it > 0 } ?: 100
+
         val binScreenX = binParams.x
-        val binHeight = if (view2.height == 0) 100 else view2.height
-        val binWidth = if (view2.width == 0) 100 else view2.width
-        val binScreenY = screenHeight - binHeight - binParams.y
+        val binScreenY = screenHeight - binActualHeight - binParams.y
 
         val rect2Screen = Rect(
             binScreenX,
             binScreenY,
-            binScreenX + binWidth,
-            binScreenY + binHeight
+            binScreenX + binActualWidth,
+            binScreenY + binActualHeight
         )
         return Rect.intersects(rect1, rect2Screen)
     }
